@@ -73,10 +73,10 @@ so NIL reads back as NIL rather than :NIL"
     message))
 
 (defun read-message (stream)
-  "The next message on STREAM, or NIL if STREAM ends cleanly before one starts"
+  "The next message on STREAM, or :END when STREAM ends cleanly before one starts"
   (let ((prefix (read-chars stream +prefix-width+)))
     (if (zerop (length prefix))
-        nil
+        :end
         (let* ((length (prefix-length prefix))
                (text (read-chars stream length)))
           (unless (= (length text) length)

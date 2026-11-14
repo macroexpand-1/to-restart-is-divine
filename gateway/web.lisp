@@ -13,6 +13,7 @@
             ".console { display: flex; flex-direction: column; min-height: 0; padding: 1rem; gap: 0.5rem; }"
             ".scrollback { flex: 1; overflow-y: auto; white-space: pre-wrap; }"
             ".echo { font-weight: bold; }"
+            ".panel { flex: none; max-height: 40vh; overflow-y: auto; }"
             ".panel:empty { display: none; }"
             ".level { border-left: 4px solid firebrick; padding: 0.5rem; margin-bottom: 0.5rem; }"
             ".condition { white-space: pre-wrap; }"
@@ -26,17 +27,21 @@
 ;;; that serializes its DOM writes
 
 (defstruct (page (:constructor %make-page))
-  scrollback panel repl-line interrupt-button
-  (history (g:make-history))
-  (levels '())
+  (scrollback nil :read-only t)
+  (panel nil :read-only t)
+  (repl-line nil :read-only t)
+  (interrupt-button nil :read-only t)
+  (lock (sb-thread:make-mutex :name "page") :read-only t)
+  ;; mutable
   session
-  (lock (sb-thread:make-mutex :name "page")))
+  (history (g:make-history))
+  (levels '()))
 
-(defun start-web (&key make-session (port 8417))
-  "Serve the console on 127.0.0.1:PORT. MAKE-SESSION takes a receiver
-and returns a session"
+(defun start-web (session-kind &key (port 8417))
+  "Serve the console on 127.0.0.1:PORT. Each tab opens a session of SESSION-KIND,
+a keyword or kind struct with a G:OPEN-SESSION method"
   (setf clog-connection:*break-on-error* nil)
-  (clog:initialize (lambda (body) (on-new-window body make-session))
+  (clog:initialize (lambda (body) (on-new-window body session-kind))
                    :host "127.0.0.1"
                    :port port))
 
@@ -44,11 +49,10 @@ and returns a session"
   "Stop serving all the tabs"
   (clog:shutdown))
 
-(defun on-new-window (body make-session)
+(defun on-new-window (body session-kind)
   "Build one tab's page and run it until it is closed. Then close its session"
   (let ((page (build-page body)))
-    (setf (page-session page)
-          (funcall make-session (lambda (event) (handle-event page event))))
+    (setf (page-session page) (g:open-session session-kind page))
     (attach-page-callbacks page)
     (clog:run body)
     (g:session-close (page-session page))))
@@ -69,35 +73,50 @@ Callbacks are attached completely separately"
                 :repl-line repl-line :interrupt-button interrupt-button)))
 
 (defun attach-page-callbacks (page)
-  "Install the REPL line's key script, attach the REPL line and interrupt callbacks,
-and focus the REPL line"
+  "Attach the REPL line and interrupt callbacks, and focus the REPL line"
+  (attach-repl-line-callbacks page)
+  (attach-interrupt-callback page)
+  (sb-thread:with-mutex ((page-lock page))
+    (clog:focus (page-repl-line page))))
+
+(defun attach-repl-line-callbacks (page)
+  "Install the REPL line's key script and handle the events it sends"
   (let ((repl-line (page-repl-line page)))
     (clog:js-execute repl-line (repl-line-script (clog:script-id repl-line)))
     (clog:set-on-event-with-data repl-line "repl-submit"
                                  (lambda (repl-line text)
                                    (declare (ignore repl-line))
                                    (submit-line page text)))
-    (clog:set-on-event-with-data repl-line "repl-recall"
-                                 (lambda (repl-line key)
+    (clog:set-on-event-with-data repl-line "repl-older"
+                                 (lambda (repl-line typed)
                                    (declare (ignore repl-line))
-                                   (recall page (if (equal key "ArrowUp")
-                                                    #'g:step-recall-older
-                                                    #'g:step-recall-newer)))))
+                                   (recall page :older typed)))
+    (clog:set-on-event-with-data repl-line "repl-newer"
+                                 (lambda (repl-line typed)
+                                   (declare (ignore repl-line))
+                                   (recall page :newer typed)))))
+
+(defun attach-interrupt-callback (page)
+  "Interrupt the session when the interrupt button is clicked"
   (clog:set-on-click (page-interrupt-button page)
                      (lambda (button)
                        (declare (ignore button))
-                       (on-interrupt-click page)))
-  (sb-thread:with-mutex ((page-lock page))
-    (clog:focus (page-repl-line page))))
+                       (on-interrupt-click page))))
 
 (defun repl-line-script (id)
   "The REPL line's key handling, run in the browser on the element named ID.
 Enter without Shift takes the text and clears the line in one step, then sends
 the text as a repl-submit event, so a key typed before the server answers is never
-mixed in. Shift+Enter inserts a newline. ArrowUp on the first line and ArrowDown on
-the last send a repl-recall event. The line grows to fit its text"
+mixed in. Shift+Enter inserts a newline. ArrowUp on the first line sends a repl-older
+event and ArrowDown on the last a repl-newer event, each with the text the line holds.
+The line grows to fit its text"
   (format nil "(function (line) {
   function fit () { line.style.height = 'auto'; line.style.height = line.scrollHeight + 'px'; }
+  function recall (e, name) {
+    e.preventDefault();
+    line.dataset.recallFrom = line.value;
+    $(line).trigger(name, [line.value]);
+  }
   line.addEventListener('input', fit);
   line.addEventListener('keydown', function (e) {
     if (e.isComposing) return;
@@ -109,11 +128,10 @@ the last send a repl-recall event. The line grows to fit its text"
       line.value = '';
       fit();
       $(line).trigger('repl-submit', [text]);
-    } else if ((e.key === 'ArrowUp' && before.indexOf('\\n') < 0)
-               || (e.key === 'ArrowDown' && after.indexOf('\\n') < 0)) {
-      e.preventDefault();
-      line.dataset.recallFrom = line.value;
-      $(line).trigger('repl-recall', [e.key]);
+    } else if (e.key === 'ArrowUp' && before.indexOf('\\n') < 0) {
+      recall(e, 'repl-older');
+    } else if (e.key === 'ArrowDown' && after.indexOf('\\n') < 0) {
+      recall(e, 'repl-newer');
     }
   });
 })(~A)" id))
@@ -127,14 +145,15 @@ Send it, and the send is outside the lock"
   (unless (g:blank-line-p line)
     (g:session-eval (page-session page) line)))
 
-(defun recall (page recall-step)
-  "Show the history entry RECALL-STEP finds (if it finds one). RECALL-STEP is STEP-RECALL-OLDER
-or STEP-RECALL-NEWER"
+(defun recall (page direction typed)
+  "Step the history in DIRECTION, :OLDER or :NEWER, from TYPED, the text the REPL line
+held, and show the line it lands on"
   (sb-thread:with-mutex ((page-lock page))
-    (multiple-value-bind (history line) (funcall recall-step (page-history page))
+    (multiple-value-bind (history line) (g:step-recall (page-history page) direction typed)
       (setf (page-history page) history)
-      (when line
-        (show-recalled-line (page-repl-line page) line)))))
+      (etypecase line
+        (string (show-recalled-line (page-repl-line page) line))
+        ((eql :none) :none)))))
 
 (defun show-recalled-line (repl-line line)
   "Put LINE in REPL-LINE with the cursor at its end, unless the visitor has typed
@@ -161,8 +180,8 @@ since asking for the recall. The browser makes that check, so no keystroke is ov
   (sb-thread:with-mutex ((page-lock page))
     (clog:focus (page-repl-line page))))
 
-(defun handle-event (page event)
-  "Show one session EVENT. Called on whatever thread the session delivers on"
+(defmethod g:receive-event ((page page) event)
+  "Show one session EVENT"
   (sb-thread:with-mutex ((page-lock page))
     (ecase (first event)
       (:ready
@@ -197,26 +216,38 @@ the page lock"
   (let ((panel (page-panel page)))
     (clog:with-connection-cache (panel)
       (clog:destroy-children panel)
-      (loop for level in (page-levels page)
+      (loop for debug-level in (page-levels page)
             for newest = t then nil
-            do (render-level page panel level newest)))))
+            do (render-level page panel debug-level newest)))))
 
-(defun render-level (page panel level newest)
+(defun render-level (page panel debug-level newest)
   "Redraw one level: its condition, a button per restart, and the backtrace if NEWEST"
   (let ((level-box (clog:create-div panel :class "level")))
-    (setf (clog:text (clog:create-div level-box :class "condition"))
-          (format nil "Debugger level ~D: ~A~%~A"
-                  (g:debug-level-depth level)
-                  (g:debug-level-type level)
-                  (g:debug-level-report level)))
-    (dolist (restart (g:debug-level-restarts level))
-      (let ((button (clog:create-button level-box :class "restart"))
-            (index (first restart)))
-        (setf (clog:text button) (g:restart-label restart))
-        (clog:set-on-click button
-                           (lambda (button)
-                             (declare (ignore button))
-                             (on-restart-click page (g:debug-level-id level) index)))))
+    (render-condition level-box debug-level)
+    (dolist (restart (g:debug-level-restarts debug-level))
+      (render-restart-button page level-box (g:debug-level-id debug-level) restart))
     (when newest
-      (dolist (frame-text (g:debug-level-backtrace level))
-        (setf (clog:text (clog:create-div level-box :class "frame")) frame-text)))))
+      (render-backtrace level-box debug-level))))
+
+(defun render-condition (level-box debug-level)
+  "Show DEBUG-LEVEL's depth, condition type and report in LEVEL-BOX"
+  (setf (clog:text (clog:create-div level-box :class "condition"))
+        (format nil "Debugger level ~D: ~A~%~A"
+                (g:debug-level-depth debug-level)
+                (g:debug-level-type debug-level)
+                (g:debug-level-report debug-level))))
+
+(defun render-restart-button (page level-box level-id restart)
+  "A button in LEVEL-BOX that invokes RESTART, an (index name report) list, of level LEVEL-ID"
+  (let ((button (clog:create-button level-box :class "restart"))
+        (index (first restart)))
+    (setf (clog:text button) (g:restart-label restart))
+    (clog:set-on-click button
+                       (lambda (button)
+                         (declare (ignore button))
+                         (on-restart-click page level-id index)))))
+
+(defun render-backtrace (level-box debug-level)
+  "One line in LEVEL-BOX per frame of DEBUG-LEVEL's backtrace"
+  (dolist (frame-text (g:debug-level-backtrace debug-level))
+    (setf (clog:text (clog:create-div level-box :class "frame")) frame-text)))

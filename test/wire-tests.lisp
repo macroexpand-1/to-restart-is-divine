@@ -35,8 +35,8 @@
   (is (equal "000007(:ping)" (with-prefix '(:ping))))
   (is (equal "00000d(:output \"λ\")" (with-prefix '(:output "λ")))))
 
-(test empty-stream-is-nil
-  (is (null (without-prefix ""))))
+(test empty-stream-is-end
+  (is (eq :end (without-prefix ""))))
 
 (test truncated-message-is-malformed
   (signals w:malformed-message (without-prefix "000010(:ping)"))

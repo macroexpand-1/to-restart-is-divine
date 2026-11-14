@@ -5,33 +5,46 @@
 (def-suite console-history :in divine-tests)
 (in-suite console-history)
 
-(defun recalled (recall-step history)
-  "The line RECALL-STEP shows from HISTORY"
-  (nth-value 1 (funcall recall-step history)))
+(defun recalled (history direction)
+  "The line a step in DIRECTION shows from HISTORY, with nothing typed"
+  (nth-value 1 (g:step-recall history direction "")))
 
 (test previous-shows-pushed-line
-  (is (equal "a" (recalled #'g:step-recall-older (g:fold-submitted-line (g:make-history) "a")))))
+  (is (equal "a" (recalled (g:fold-submitted-line (g:make-history) "a") :older))))
 
 (test previous-stops-at-oldest
-  (let ((at-oldest (g:step-recall-older (g:fold-submitted-line (g:make-history) "a"))))
-    (multiple-value-bind (history line) (g:step-recall-older at-oldest)
-      (is (null line))
+  (let ((at-oldest (g:step-recall (g:fold-submitted-line (g:make-history) "a") :older "")))
+    (multiple-value-bind (history line) (g:step-recall at-oldest :older "a")
+      (is (eq :none line))
       (is (eq at-oldest history)))))
 
+(test next-without-recalling-is-none
+  (is (eq :none (recalled (g:fold-submitted-line (g:make-history) "a") :newer))))
+
 (test next-past-newest-is-empty
-  (let ((recalling (g:step-recall-older (g:fold-submitted-line (g:make-history) "a"))))
-    (multiple-value-bind (history line) (g:step-recall-newer recalling)
+  (let ((recalling (g:step-recall (g:fold-submitted-line (g:make-history) "a") :older "")))
+    (multiple-value-bind (history line) (g:step-recall recalling :newer "a")
       (is (equal "" line))
-      (is (null (g:history-cursor history))))))
+      (is (eq :none (g:history-cursor history))))))
+
+(test next-past-newest-restores-draft
+  (let* ((history (reduce #'g:fold-submitted-line '("a" "b") :initial-value (g:make-history)))
+         (at-b (g:step-recall history :older "(car"))
+         (at-a (g:step-recall at-b :older "b"))
+         (back-at-b (g:step-recall at-a :newer "a")))
+    (is (equal "(car" (nth-value 1 (g:step-recall back-at-b :newer "b"))))))
+
+(test unknown-direction-is-refused
+  (signals error (g:step-recall (g:make-history) :sideways "")))
 
 (test blank-and-repeat-not-kept
   (let ((history (reduce #'g:fold-submitted-line '("a" "  " "a") :initial-value (g:make-history))))
     (is (equal '("a") (g:history-entries history)))))
 
 (test push-resets-cursor
-  (let* ((recalling (g:step-recall-older (g:fold-submitted-line (g:make-history) "a")))
+  (let* ((recalling (g:step-recall (g:fold-submitted-line (g:make-history) "a") :older ""))
          (pushed (g:fold-submitted-line recalling "b")))
-    (is (equal "b" (recalled #'g:step-recall-older pushed)))))
+    (is (equal "b" (recalled pushed :older)))))
 
 (def-suite console-debugger :in divine-tests)
 (in-suite console-debugger)
