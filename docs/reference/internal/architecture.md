@@ -209,7 +209,7 @@ sequenceDiagram
 Other restarts just close the level that they belong to.
 The bridge keeps the stack of open levels so the panel can show which level a button belongs to.
 
-This is also why `debugger-loop` in the sketch is a loop and not a single wait.
+This is also why `debugger-loop` in the sketch (`serve-level` in `agent/agent.lisp`) is a loop and not a single wait.
 The loop takes the next message, and if it's `:eval` it evaluates it right there (where another error recurses into the hook), and if it's `:invoke-restart` for its own id it invokes the restart and unwinds.
 That's basically how SBCL's own debugger REPL works (more or less.)
 

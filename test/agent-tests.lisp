@@ -6,17 +6,17 @@
 (in-suite agent)
 
 (defun next (stream)
-  "Next message on STREAM, or NIL + failed check after five seconds"
+  "Next message on STREAM, :END, or :TIMEOUT with a failed check after five seconds"
   (handler-case (sb-sys:with-deadline (:seconds 5)
                   (w:read-message stream))
     (sb-sys:deadline-timeout ()
       (fail "No message within five seconds.")
-      nil)))
+      :timeout)))
 
 (defun next-past-output (stream)
   "The next message on STREAM, but not :output"
   (loop for message = (next stream)
-        while (eq :output (first message))
+        while (and (consp message) (eq :output (first message)))
         finally (return message)))
 
 (defun send-to-agent (stream message)
@@ -54,6 +54,12 @@ After, hang up and wait for the agent's threads to end"
    (lambda (stream)
      (send-to-agent stream '(:ping))
      (is (equal '(:pong) (next stream))))))
+
+(test unknown-kind-stops-the-reader
+  (call-with-agent
+   (lambda (stream)
+     (send-to-agent stream '(:no-such-kind))
+     (is (eq :end (next stream))))))
 
 (test eval-sends-printed-values
   (call-with-agent
@@ -130,6 +136,7 @@ After, hang up and wait for the agent's threads to end"
      (send-to-agent stream '(:eval "(break)"))
      (let ((opened (next stream)))
        (is (eq :level-opened (first opened)))
+       (is (search "(BREAK)" (first (getf (rest opened) :backtrace))))
        (send-to-agent stream (list :invoke-restart (level-id-of opened) (restart-index opened "CONTINUE")))
        (is (equal (list :level-closed (level-id-of opened)) (next stream)))
        (is (equal '(:values ("NIL")) (next stream)))))))

@@ -7,54 +7,57 @@
 
 (defclass agent-session (session)
   ((link :initarg :link :reader agent-session-link)
-   (receiver :initarg :receiver :reader session-receiver)
+   (receiver :initarg :receiver :reader agent-session-receiver)
    (send-lock :initform (sb-thread:make-mutex :name "agent session send") :reader agent-session-send-lock)
+   ;; mutable
    (closed :initform nil :accessor agent-session-closed-p)
    (event-thread :accessor agent-session-event-thread))
   (:documentation "A session on one agent, reached over its link"))
 
-(defun start-agent-session (receiver)
+(defmethod open-session ((kind (eql :agent)) receiver)
   "A session on a fresh agent in its own SBCL process. It reports to RECEIVER"
-  (let ((session (make-instance 'agent-session :link (ln:open-agent-process) :receiver receiver)))
-    (setf (agent-session-event-thread session)
-          (sb-thread:make-thread (lambda () (event-loop session)) :name "agent session events"))
-    session))
+  (let ((agent-session (make-instance 'agent-session :link (ln:open-agent-process) :receiver receiver)))
+    (setf (agent-session-event-thread agent-session)
+          (sb-thread:make-thread (lambda () (event-loop agent-session)) :name "agent session events"))
+    agent-session))
 
-(defun event-loop (session)
+(defun event-loop (agent-session)
   "Hand each agent message to the receiver until the agent hangs up"
   (handler-case
-      (loop for message = (w:read-message (ln:link-stream (agent-session-link session)))
-            while message
+      (loop for message = (w:read-message (ln:link-stream (agent-session-link agent-session)))
+            until (eq message :end)
             unless (eq (first message) :pong)
-              do (deliver session message))
+              do (deliver agent-session message))
     (error (condition)
-      (unless (agent-session-closed-p session)
+      (unless (agent-session-closed-p agent-session)
         (format *error-output* "~&;; Agent session event thread stopped: ~A~%" condition)))))
 
-(defun deliver (session event)
-  "Call the receiver with EVENT (unless SESSION is closed). A receiver error is logged and not fatal"
-  (unless (agent-session-closed-p session)
-    (handler-case (funcall (session-receiver session) event)
+(defun deliver (agent-session event)
+  "Hand EVENT to the receiver (unless AGENT-SESSION is closed). A receiver error is logged and not fatal"
+  (unless (agent-session-closed-p agent-session)
+    (handler-case (receive-event (agent-session-receiver agent-session) event)
       (error (condition)
         (format *error-output* "~&;; Event receiver failed on ~S: ~A~%" (first event) condition)))))
 
-(defun send-to-agent (session message)
-  "Write MESSAGE to SESSION's agent unless SESSION is closed"
-  (sb-thread:with-mutex ((agent-session-send-lock session))
-    (unless (agent-session-closed-p session)
-      (w:write-message message (ln:link-stream (agent-session-link session))))))
+(defun send-to-agent (agent-session message)
+  "Write MESSAGE to AGENT-SESSION's agent: :SENT, or :DROPPED once AGENT-SESSION is closed"
+  (sb-thread:with-mutex ((agent-session-send-lock agent-session))
+    (if (agent-session-closed-p agent-session)
+        :dropped
+        (progn (w:write-message message (ln:link-stream (agent-session-link agent-session)))
+               :sent))))
 
-(defmethod session-eval ((session agent-session) text)
-  (send-to-agent session (list :eval text)))
+(defmethod session-eval ((agent-session agent-session) text)
+  (send-to-agent agent-session (list :eval text)))
 
-(defmethod session-invoke-restart ((session agent-session) id index)
-  (send-to-agent session (list :invoke-restart id index)))
+(defmethod session-invoke-restart ((agent-session agent-session) id index)
+  (send-to-agent agent-session (list :invoke-restart id index)))
 
-(defmethod session-interrupt ((session agent-session))
-  (send-to-agent session (list :interrupt)))
+(defmethod session-interrupt ((agent-session agent-session))
+  (send-to-agent agent-session (list :interrupt)))
 
-(defmethod session-close ((session agent-session))
-  (sb-thread:with-mutex ((agent-session-send-lock session))
-    (setf (agent-session-closed-p session) t))
-  (ln:close-link (agent-session-link session))
-  (sb-thread:join-thread (agent-session-event-thread session) :default nil))
+(defmethod session-close ((agent-session agent-session))
+  (sb-thread:with-mutex ((agent-session-send-lock agent-session))
+    (setf (agent-session-closed-p agent-session) t))
+  (ln:close-link (agent-session-link agent-session))
+  (sb-thread:join-thread (agent-session-event-thread agent-session) :default nil))

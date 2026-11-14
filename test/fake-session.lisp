@@ -24,61 +24,71 @@ is not of type
   "What the fake answers, the levels it opens, and the restarts each level offers.")
 
 (defun fake-abort-index (script)
-  "The index of ABORT in SCRIPT's restart list"
-  (first (find "ABORT" (fake-script-restarts script) :key #'second :test #'string=)))
+  "The index of ABORT in SCRIPT's restart list, or :NONE"
+  (let ((entry (find "ABORT" (fake-script-restarts script) :key #'second :test #'string=)))
+    (if (consp entry) (first entry) :none)))
 
 (defclass fake-session (g:session)
-  ((receiver :initarg :receiver :reader fake-receiver)
-   (next-id :initform 1 :accessor fake-next-id)
-   (open-level-ids :initform '() :accessor fake-open-level-ids))
+  ((receiver :initarg :receiver :reader fake-session-receiver)
+   ;; mutable
+   (next-id :initform 1 :accessor fake-session-next-id)
+   (open-level-ids :initform '() :accessor fake-session-open-level-ids))
   (:documentation "A session that answers with *FAKE-SCRIPT* lists"))
 
-(defun make-fake-session (receiver)
+(defmethod g:open-session ((kind (eql :fake)) receiver)
   "A fake session that reports to RECEIVER"
   (make-instance 'fake-session :receiver receiver))
 
-(defun deliver (session event)
-  "Send EVENT to SESSION's receiver"
-  (funcall (fake-receiver session) event))
+(defun deliver (fake-session event)
+  "Send EVENT to FAKE-SESSION's receiver"
+  (g:receive-event (fake-session-receiver fake-session) event))
 
-(defun open-level (session type report text)
+(defun open-level (fake-session type report text)
   "Open a debugger level for TYPE and REPORT, raised by TEXT, and
 announce it"
-  (let ((id (fake-next-id session)))
-    (setf (fake-next-id session) (1+ id))
-    (push id (fake-open-level-ids session))
-    (deliver session (list :level-opened
-                           :id id
-                           :depth (length (fake-open-level-ids session))
-                           :type type
-                           :report report
-                           :restarts (fake-script-restarts *fake-script*)
-                           :backtrace (list (format nil "0: ~A" text)
-                                            (format nil "1: (EVAL ~A)" text))))))
+  (let ((id (fake-session-next-id fake-session)))
+    (setf (fake-session-next-id fake-session) (1+ id))
+    (push id (fake-session-open-level-ids fake-session))
+    (deliver fake-session (list :level-opened
+                                :id id
+                                :depth (length (fake-session-open-level-ids fake-session))
+                                :type type
+                                :report report
+                                :restarts (fake-script-restarts *fake-script*)
+                                :backtrace (list (format nil "0: ~A" text)
+                                                 (format nil "1: (EVAL ~A)" text))))))
 
-(defmethod g:session-eval ((session fake-session) text)
+(defun deliver-unscripted (fake-session text)
+  "Tell FAKE-SESSION's receiver that TEXT has no script, then send no values"
+  (deliver fake-session (list :output (format nil ";; The fake session has no script for ~A~%" text)))
+  (deliver fake-session (list :values '())))
+
+(defmethod g:session-eval ((fake-session fake-session) text)
   (let ((reply (assoc text (fake-script-replies *fake-script*) :test #'string=))
         (failure (assoc text (fake-script-errors *fake-script*) :test #'string=)))
-    (cond (reply (dolist (event (rest reply)) (deliver session event)))
+    (cond (reply (dolist (event (rest reply)) (deliver fake-session event)))
           (failure (destructuring-bind (type report) (rest failure)
-                     (open-level session type report text)))
-          (t (deliver session (list :output (format nil ";; The fake session has no script for ~A~%" text)))
-             (deliver session (list :values '()))))))
+                     (open-level fake-session type report text)))
+          (t (deliver-unscripted fake-session text)))))
 
-(defmethod g:session-invoke-restart ((session fake-session) id index)
-  (let* ((open-level-ids (fake-open-level-ids session))
-         (tail (member id open-level-ids)))
-    (when tail
-      (let ((closing (if (eql index (fake-abort-index *fake-script*))
-                         open-level-ids
-                         (ldiff open-level-ids (rest tail)))))
-        (setf (fake-open-level-ids session) (nthcdr (length closing) open-level-ids))
-        (dolist (closed closing)
-          (deliver session (list :level-closed closed)))))))
+(defun closing-level-ids (open-level-ids id index)
+  "The levels in OPEN-LEVEL-IDS that restart INDEX of level ID closes, newest first.
+ABORT closes them all and an unknown ID closes none"
+  (let ((tail (member id open-level-ids)))
+    (cond ((null tail) '())
+          ((eql index (fake-abort-index *fake-script*)) open-level-ids)
+          (t (ldiff open-level-ids (rest tail))))))
 
-(defmethod g:session-interrupt ((session fake-session))
-  (open-level session "TO-RESTART-IS-DIVINE/AGENT:INTERRUPTED" "Interrupted from the page."
+(defmethod g:session-invoke-restart ((fake-session fake-session) id index)
+  (let ((closing (closing-level-ids (fake-session-open-level-ids fake-session) id index)))
+    (setf (fake-session-open-level-ids fake-session)
+          (nthcdr (length closing) (fake-session-open-level-ids fake-session)))
+    (dolist (closed closing)
+      (deliver fake-session (list :level-closed closed)))))
+
+(defmethod g:session-interrupt ((fake-session fake-session))
+  (open-level fake-session "TO-RESTART-IS-DIVINE/AGENT:INTERRUPTED" "Interrupted from the page."
               "(interrupt)"))
 
-(defmethod g:session-close ((session fake-session))
-  (setf (fake-open-level-ids session) '()))
+(defmethod g:session-close ((fake-session fake-session))
+  (setf (fake-session-open-level-ids fake-session) '()))

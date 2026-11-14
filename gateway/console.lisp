@@ -4,13 +4,14 @@
 
 ;;; REPL line history
 
-(defstruct (history (:constructor %make-history (entries cursor)))
+(defstruct (history (:constructor %make-history (entries cursor draft)))
   (entries '() :read-only t)            ; submitted lines, newest first
-  (cursor nil :read-only t))            ; index into ENTRIES while recalling
+  (cursor :none :read-only t)           ; index into ENTRIES while recalling, or :NONE
+  (draft "" :read-only t))              ; the unsent line recalling started from
 
 (defun make-history ()
   "Empty history"
-  (%make-history '() nil))
+  (%make-history '() :none ""))
 
 (defun blank-line-p (line)
   "True when LINE holds only whitespace"
@@ -25,32 +26,50 @@
     (%make-history (if (or (blank-line-p line) (equal line (first entries)))
                        entries
                        (cons line entries))
-                   nil)))
+                   :none
+                   "")))
 
 ;;; Step: the transition for one arrow key while recalling
-;;; (history) -> (values history line). LINE is what the REPL line shows now or NIL
+;;; (history direction typed) -> (values history line). TYPED is what the REPL line
+;;; held when the key was pressed. LINE is what it shows now, or :NONE to leave it
 
-(defun step-recall-older (history)
-  "Go to the next older entry. The line is NIL at the oldest"
+(defun step-recall (history direction typed)
+  "Step HISTORY one entry in DIRECTION, :OLDER or :NEWER. TYPED becomes the draft
+when recalling starts"
+  (ecase direction
+    (:older (step-recall-older history typed))
+    (:newer (step-recall-newer history))))
+
+(defun step-recall-older (history typed)
+  "Go to the next older entry, keeping TYPED as the draft if this starts the recall.
+The line is :NONE at the oldest"
   (let* ((entries (history-entries history))
          (cursor (history-cursor history))
-         (older (if cursor (1+ cursor) 0)))
+         (older (if (eq cursor :none) 0 (1+ cursor)))
+         (draft (if (eq cursor :none) typed (history-draft history))))
     (if (< older (length entries))
-        (values (%make-history entries older) (nth older entries))
-        (values history nil))))
+        (values (%make-history entries older draft) (nth older entries))
+        (values history :none))))
 
 (defun step-recall-newer (history)
-  "Go to the next newer entry. Past the newest, the line is empty and the cursor clears"
+  "Go to the next newer entry. Past the newest, the line is the draft and the cursor clears.
+The line is :NONE when not recalling"
   (let ((entries (history-entries history))
-        (cursor (history-cursor history)))
-    (cond ((null cursor) (values history nil))
-          ((zerop cursor) (values (%make-history entries nil) ""))
-          (t (values (%make-history entries (1- cursor)) (nth (1- cursor) entries))))))
+        (cursor (history-cursor history))
+        (draft (history-draft history)))
+    (cond ((eq cursor :none) (values history :none))
+          ((zerop cursor) (values (%make-history entries :none "") draft))
+          (t (values (%make-history entries (1- cursor) draft) (nth (1- cursor) entries))))))
 
 ;;; Debugger stack
 
 (defstruct debug-level
-  id depth type report restarts backtrace)
+  (id nil :read-only t)
+  (depth nil :read-only t)
+  (type nil :read-only t)
+  (report nil :read-only t)
+  (restarts '() :read-only t)
+  (backtrace '() :read-only t))
 
 (defun event-debug-level (event)
   "The debugger level a (:level-opened ...) EVENT describes"
@@ -59,9 +78,9 @@
     (make-debug-level :id id :depth depth :type type :report report
                       :restarts restarts :backtrace backtrace)))
 
-(defun push-level (levels level)
-  "LEVELS with LEVEL opened on top"
-  (cons level levels))
+(defun push-level (levels debug-level)
+  "LEVELS with DEBUG-LEVEL opened on top"
+  (cons debug-level levels))
 
 ;;; Closing a level drops it and every newer one
 ;;; (levels id) -> levels

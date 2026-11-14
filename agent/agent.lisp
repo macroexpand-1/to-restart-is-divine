@@ -13,7 +13,7 @@
 (defstruct (eval-state (:constructor make-eval-state (&key levels top-level-abort evaluating))
                        (:copier nil))
   (levels '() :read-only t)
-  (top-level-abort nil :read-only t)
+  (top-level-abort :none :read-only t)
   (evaluating nil :read-only t))
 
 (defvar *eval-state* (make-eval-state)
@@ -28,8 +28,9 @@
 (defstruct (agent (:constructor %make-agent (stream)))
   (stream nil :read-only t)
   (send-lock (make-lock "agent send") :read-only t)
-  (connected-p t)
   (inbox (make-mailbox) :read-only t)
+  ;; mutable
+  (connected-p t)
   (next-id 1)
   eval-thread
   reader-thread)
@@ -43,10 +44,13 @@
                         (stream-error ()
                           (setf (agent-connected-p agent) nil)))))))
 
-(defun eval-state-with (state &key (levels (eval-state-levels state))
-                                (top-level-abort (eval-state-top-level-abort state))
-                                (evaluating (eval-state-evaluating state)))
-  "Copy of STATE with the given fields replaced"
+(defmethod forward-text ((agent agent) text)
+  (send agent (list :output text)))
+
+(defun eval-state-with (eval-state &key (levels (eval-state-levels eval-state))
+                                     (top-level-abort (eval-state-top-level-abort eval-state))
+                                     (evaluating (eval-state-evaluating eval-state)))
+  "Copy of EVAL-STATE with the given fields replaced"
   (make-eval-state :levels levels :top-level-abort top-level-abort :evaluating evaluating))
 
 (define-condition interrupted (condition)
@@ -72,7 +76,7 @@ to OUTPUT and reads nothing. CL-USER is current and REPL variables are empty"
 
 (defun eval-loop (agent)
   "The eval thread which serves the inbox at the top level, forever"
-  (let ((output (make-forwarding-stream (lambda (text) (send agent (list :output text)))))
+  (let ((output (make-forwarding-stream agent))
         (*eval-state* (make-eval-state)))
     (call-with-visitor-repl
      output
@@ -83,13 +87,21 @@ to OUTPUT and reads nothing. CL-USER is current and REPL variables are empty"
 
 (defun serve-top-level (agent)
   "Take a message from the inbox at the top level. A restart for a level that is gone
-is ignored"
+is dropped"
   (let ((message (mailbox-receive (agent-inbox agent))))
-    (when (eq (first message) :eval)
-      (with-simple-restart (abort "Return to top level.")
-        (let ((*eval-state* (eval-state-with *eval-state*
-                                             :top-level-abort (find 'abort (compute-restarts) :key #'restart-name))))
-          (evaluate agent (second message)))))))
+    (ecase (first message)
+      (:eval (call-with-top-level-abort (lambda () (evaluate agent (second message)))))
+      (:invoke-restart :stale-restart))))
+
+(defun call-with-top-level-abort (function)
+  "Call FUNCTION under the agent's top-level ABORT restart, which *EVAL-STATE* remembers"
+  (with-simple-restart (abort "Return to top level.")
+    (let ((*eval-state* (eval-state-with *eval-state* :top-level-abort (newest-abort-restart))))
+      (funcall function))))
+
+(defun newest-abort-restart ()
+  "The innermost ABORT restart, or :NONE"
+  (or (find 'abort (compute-restarts) :key #'restart-name) :none))
 
 (defun evaluate (agent text)
   "Read + evaluate each form in TEXT, sending printed values"
@@ -134,23 +146,31 @@ Long or deep structures are cut short unless visitor has set their own limits"
          (*eval-state* (eval-state-with *eval-state* :levels levels :evaluating nil)))
     (setf (agent-next-id agent) (1+ id))
     (finish-output *standard-output*)
-    (send agent (list :level-opened
-                      :id id
-                      :depth (length levels)
-                      :type (type-name condition)
-                      :report (printed #'princ-to-string condition)
-                      :restarts (loop for restart in restarts
-                                      for index from 0
-                                      collect (list index
-                                                    (restart-name-string restart)
-                                                    (printed #'princ-to-string restart)))
-                      :backtrace (backtrace)))
+    (send agent (level-opened-message id (length levels) condition restarts (backtrace)))
     ;; SBCL binds the hook to NIL while it runs, so each level binds it
     ;; again: an error inside an open level then opens the next level here too.
     (unwind-protect
          (call-with-debugger (lambda (inner) (enter-debugger agent inner))
                              (lambda () (serve-level agent)))
       (send agent (list :level-closed id)))))
+
+(defun level-opened-message (id depth condition restarts backtrace)
+  "The :level-opened message for CONDITION, opened as level ID at DEPTH"
+  (list :level-opened
+        :id id
+        :depth depth
+        :type (type-name condition)
+        :report (printed #'princ-to-string condition)
+        :restarts (restart-entries restarts)
+        :backtrace backtrace))
+
+(defun restart-entries (restarts)
+  "RESTARTS as the (index name report) lists a :level-opened message carries"
+  (loop for restart in restarts
+        for index from 0
+        collect (list index
+                      (restart-name-string restart)
+                      (printed #'princ-to-string restart))))
 
 (defun serve-level (agent)
   "Take messages from the inbox inside the newest level until a restart"
@@ -165,15 +185,16 @@ Long or deep structures are cut short unless visitor has set their own limits"
   "Invoke restart INDEX of open level ID. Unknown indexes or levels are ignored"
   (let* ((level (find id (eval-state-levels *eval-state*) :key #'first))
          (restarts (second level)))
-    (when (and level (typep index `(integer 0 (,(length restarts)))))
+    (when (and level (integerp index) (< -1 index (length restarts)))
       (invoke-restart-interactively (nth index restarts)))))
 
 (defun visible-restarts (condition)
   "CONDITION's restarts (from the inside) ending at agent's top-level ABORT.
-Restarts beyond it belong to the thread and would end the eval thread"
+Restarts beyond it belong to the thread and would end the eval thread.
+All of them when the top-level ABORT is :NONE or not among them"
   (let* ((restarts (compute-restarts condition))
          (end (position (eval-state-top-level-abort *eval-state*) restarts)))
-    (if end
+    (if (integerp end)
         (subseq restarts 0 (1+ end))
         restarts)))
 
@@ -212,16 +233,21 @@ Restarts beyond it belong to the thread and would end the eval thread"
                    (invoke-debugger (make-condition 'interrupted)))))))
 
 
+(defun dispatch-message (agent message)
+  "Act on one MESSAGE from the gateway. A kind the agent doesn't know is an error"
+  (ecase (first message)
+    ((:eval :invoke-restart) (mailbox-send (agent-inbox agent) message))
+    (:interrupt (interrupt-evaluation agent))
+    (:ping (send agent '(:pong)))))
+
 (defun reader-loop (agent)
-  "Read and dispatch messages from gateway until the socket closes, then end eval thread"
+  "Read and dispatch messages from gateway until the socket closes, then end eval thread.
+A message the agent can't act on stops the reader"
   (unwind-protect
        (handler-case
            (loop for message = (read-message (agent-stream agent))
-                 while message
-                 do (case (first message)
-                      ((:eval :invoke-restart) (mailbox-send (agent-inbox agent) message))
-                      (:interrupt (interrupt-evaluation agent))
-                      (:ping (send agent '(:pong)))))
+                 until (eq message :end)
+                 do (dispatch-message agent message))
          (error (condition)
            (format *error-output* "~&;; Agent reader stopped: ~A~%" condition)))
     (kill-thread (agent-eval-thread agent))

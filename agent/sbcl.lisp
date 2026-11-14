@@ -85,6 +85,7 @@ interrupts enabled inside"
 (defstruct (mailbox (:constructor make-mailbox ()))
   (lock (sb-thread:make-mutex :name "mailbox") :read-only t)
   (ready (sb-thread:make-waitqueue :name "mailbox") :read-only t)
+  ;; mutable
   (messages '()))                       ; oldest first
 
 (defun mailbox-send (mailbox message)
@@ -102,24 +103,27 @@ interrupts enabled inside"
 
 ;; Stream things
 
+(defgeneric forward-text (sink text)
+  (:documentation "Take TEXT, one flushed chunk of a forwarding stream's output"))
+
 (defclass forwarding-stream (sb-gray:fundamental-character-output-stream)
   ((sink :initarg :sink :reader stream-sink)
    (buffer :initform (make-array 0 :element-type 'character :adjustable t :fill-pointer t)
            :reader stream-buffer)
    (column :initform 0 :accessor stream-column))
-  (:documentation "An output stream that hands text to SINK, one line at a time"))
+  (:documentation "An output stream that hands text to SINK with FORWARD-TEXT, one line at a time"))
 
 (defun make-forwarding-stream (sink)
-  "An output stream whose text is passed to SINK, a function of one string"
+  "An output stream whose text is passed to SINK with FORWARD-TEXT"
   (make-instance 'forwarding-stream :sink sink))
 
-(defun flush-stream (stream)
-  "Hand STREAM's stuff to its sink"
-  (let ((buffer (stream-buffer stream)))
+(defun flush-stream (forwarding-stream)
+  "Hand FORWARDING-STREAM's stuff to its sink"
+  (let ((buffer (stream-buffer forwarding-stream)))
     (when (plusp (length buffer))
       (let ((text (copy-seq buffer)))
         (setf (fill-pointer buffer) 0)
-        (funcall (stream-sink stream) text)))))
+        (forward-text (stream-sink forwarding-stream) text)))))
 
 ;; Extend sb-gray's methods
 
@@ -155,9 +159,10 @@ which is nifty"
     (funcall function)))
 
 (defun backtrace-calls (stop-at count)
-  "Up to COUNT frames as call forms (newest first). Ends before the
-first frame of STOP-AT"
-  (loop for call in (sb-debug:list-backtrace :count count)
+  "Up to COUNT frames as call forms (newest first), from the frame the debugger
+was entered for. Ends before the first frame of STOP-AT"
+  (loop for call in (sb-debug:list-backtrace :count count
+                                             :from (or sb-debug:*stack-top-hint* :current-frame))
         until (and (consp call) (eq (first call) stop-at))
         collect call))
 

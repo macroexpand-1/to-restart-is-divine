@@ -49,6 +49,7 @@
   :serial t
   :components ((:module "test"
                 :components ((:file "package")
+                             (:file "event-capture")
                              (:file "wire-tests")
                              (:file "agent-tests")
                              (:file "link-tests")
