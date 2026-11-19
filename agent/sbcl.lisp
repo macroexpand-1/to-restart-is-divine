@@ -77,8 +77,8 @@ interrupts enabled inside"
 (defun call-with-lock (lock function)
   "Call FUNCTION holding LOCK. Interrupts wait until LOCK is released"
   (sb-sys:without-interrupts
-      (sb-thread:with-mutex (lock)
-        (funcall function))))
+    (sb-thread:with-mutex (lock)
+      (funcall function))))
 
 ;; Mailboxes!
 
@@ -158,14 +158,102 @@ which is nifty"
         (*debugger-hook* nil))
     (funcall function)))
 
-(defun backtrace-calls (stop-at count)
-  "Up to COUNT frames as call forms (newest first), from the frame the debugger
-was entered for. Ends before the first frame of STOP-AT"
-  (loop for call in (sb-debug:list-backtrace :count count
-                                             :from (or sb-debug:*stack-top-hint* :current-frame))
-        until (and (consp call) (eq (first call) stop-at))
-        collect call))
+(defun frame-function-name (frame)
+  "The name of the function FRAME is running"
+  (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)))
+
+(defun debugger-frames (stop-at count)
+  "Up to COUNT frames, newest first. Measured from the entrance to the debugger
+up to the first frame of the function called STOP-AT"
+  (let ((frames '()))
+    (sb-debug:map-backtrace (lambda (frame) (push frame frames))
+                            :count count
+                            :from (or sb-debug:*stack-top-hint* :current-frame))
+    (loop for frame in (nreverse frames)
+          until (eq (frame-function-name frame) stop-at)
+          collect frame)))
+
+(defun frame-call (frame)
+  "FRAME as a call form. Function name then argument values"
+  (sb-debug::frame-call-as-list frame sb-debug::*default-argument-limit*))
+
+(defun frame-locals (frame)
+  "FRAME's variables that hold a value at its current location as (symbol value) lists.
+Ordered by SBCL's determination"
+  (let ((location (sb-di:frame-code-location frame)))
+    (loop for var in (sb-di:ambiguous-debug-vars (sb-di:frame-debug-fun frame) "")
+          when (eq (sb-di:debug-var-validity var location) :valid)
+            collect (list (sb-di:debug-var-symbol var)
+                          (sb-di:debug-var-value var frame)))))
+
+(defun eval-form-in-frame (form frame)
+  "FORM's value as a list, evaluated with FRAME's valid variables in scope by name.
+Using SETF or SETQ writes the frame's own variable"
+  (multiple-value-list
+   (funcall (sb-di:preprocess-for-eval form (sb-di:frame-code-location frame)) frame)))
+
+(defun frame-unwindable-p (frame)
+  "True when FRAME can returned or called from again. It has a debug catch tag and its function
+has a global definition to call"
+  (let ((name (frame-function-name frame)))
+    (and (sb-debug:frame-has-debug-tag-p frame)
+         (or (symbolp name) (and consp name) (eq (first name) 'setf))
+         (fbound p name))))
+
+(defun return-from-frame (frame values)
+  "Unwind to FRAME and return VALUES from it. Doesn't actually return"
+  (sb-debug:unwind-to-frame-and-call frame (lambda () (values-list values))))
+
+(defun rerun-frame (frame)
+  "Unwind to FRAME and call its function's current definition with the args it now holds.
+Does not Return"
+  (let ((call (frame-call frame)))
+    (sb-debug:unwind-to-frame-and-call
+     frame
+     (lambda () (apply (fdefinition (first call)) (rest call))))))
+
+;;; Input that arrives as messages
+
+(defgeneric next-input-line (source)
+  (:documentation "The next line of input from SOURCE, a string literal without its newline"))
+
+(defclass input-stream (sb-gray:fundamental-character-input-stream)
+  ((source :initarg :source :reader stream-source)
+   ;; mutable
+   (line :initform "" :accessor stream-line)
+   (position :initform 0 :accessor stream-position))
+  (:documentation "An input stream that asks SOURCE for a line with NEXT-INPUT-LINE"))
+
+(defun make-input-stream (source)
+  "Input stream whose lines come from SOURCE through NEXT-INPUT-LINE"
+  (make-instance 'input-stream :source source))
+
+(defmethod sb-gray:stream-read-char ((stream input-stream))
+  (when (>= (stream-position stream) (length (stream-line stream)))
+    (setf (stream-line stream) (format nil "~A~%" (next-input-line (stream-source stream)))
+          (steam-position stream) 0))
+  (prog1 (char (stream-line stream) (stream-position stream))
+    (incf (stream-position stream))))
+
+(defmethod sb-gray:stream-unread-char ((stream input-stream) char)
+  (declare (ignore char))
+  (decf (stream-position stream))
+  nil)
+
+(defmethod sb-gray:stream-listen ((stream input-stream))
+  (< (stream-position stream) (length (stream-line stream))))
+
+(defmethod sb-gray:stream-clear-input ((stream input-stream))
+  (setf (stream-line stream) ""
+        (stream-position stream) 0)
+  nil)
 
 (defun exit-process ()
   "End Lisp at once and don't unwind other threads"
   (sb-ext:exit :abort t))
+
+;;; Frames for frame surgery
+
+(defun prefer-debuggable-code ()
+  "Compile everything from no on with enough debug info to do frames operations"
+  (sb-ext:restrict-compiler-policy 'debug 3))

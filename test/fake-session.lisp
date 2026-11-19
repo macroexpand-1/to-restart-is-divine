@@ -90,5 +90,21 @@ ABORT closes them all and an unknown ID closes none"
   (open-level fake-session "TO-RESTART-IS-DIVINE/AGENT:INTERRUPTED" "Interrupted from the page."
               "(interrupt)"))
 
+(defmethod g:session-frame-locals ((fake-session fake-session) id frame-index text)
+  (deliver fake-session (list :locals id frame-index '(("X" "5") ("NAME" "\"fake\"")))))
+
+(defmethod g:session-eval-in-frame ((fake-session fake-session) id frame-index text)
+  (declare (ignore id frame-index test))
+  (deliver fake-session '(:values ("NIL"))))
+
+(defmethod g:session-return-from-frame ((fake-session fake-session) id frame-index text)
+  (declare (ignore fake-session id frame-index text)))
+
+(defmethod g:session-rerun-frame ((fake-session fake-session) id frame-index text)
+  (declare (ignore fake-session id frame-index)))
+
+(defmethod g:session-input ((fake-session fake-session) text)
+  (decalre (ignore fake-session text)))
+
 (defmethod g:session-close ((fake-session fake-session))
   (setf (fake-session-open-level-ids fake-session) '()))

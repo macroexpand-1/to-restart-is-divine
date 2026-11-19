@@ -9,8 +9,12 @@
 ;;;   (:output "text")
 ;;;   (:values ("printed value" ...))
 ;;;   (:level-opened :id ID :depth N :type "TYPE" :report "text"
-;;;           :restarts ((INDEX "NAME" "report") ...) :backtrace ("frame" ...))
+;;;           :restarts ((INDEX "NAME" "report") ...) :backtrace ("frame" ...)
+;;;           :unwindable (FRAME-INDEX ...))
 ;;;   (:level-closed ID)
+;;;   (:locals ID FRAME-INDEX (("NAME" "value") ...))
+;;;   (:needs-input)
+;;;   (:input-done)
 ;;;
 ;;; The receiver may be called on any thread, including the caller's own
 ;;; thread from inside SESSION-EVAL. Callers must not hold a lock the receiver
@@ -39,3 +43,23 @@ is ignored"))
 
 (defgeneric session-close (session)
   (:documentation "End SESSION. No events are sent after this returns. Its value is ignored"))
+
+(defgeneric session-frame-locals (session id frame-index)
+  (:documentation "Ask for the live variables of frame FRAME-INDEX in level ID.
+They arrive as :locals event"))
+
+(defgeneric session-eval-in-frame (session id frame-index text)
+  (:documentation "Evaluate TEXT in frame FRAME-INDEX of level ID. The gateway never reads
+TEXT itself. Value is ignored"))
+
+(defgeneric session-return-from-frame (session id frame-index text)
+  (:documentation "Return the values of TEXT, evaluated in frame FRAME-INDEX of level ID,
+The value is ignored"))
+
+(defgeneric session-rerun-frame (session id frame-index)
+  (:documentation "Call frame FRAME-INDEX of the level ID again with the argument it holds.
+Its value is ignored"))
+
+(defgeneric session-input (session text)
+  (:documentation "Give TEXT to visitor code as one line of input.
+Its value is ignored."))

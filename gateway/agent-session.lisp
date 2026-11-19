@@ -56,6 +56,21 @@
 (defmethod session-interrupt ((agent-session agent-session))
   (send-to-agent agent-session (list :interrupt)))
 
+(defmethod session-frame-locals ((agent-session agent-session) id frame-index)
+  (send-to-agent agent-session (list :locals id frame-index)))
+
+(defmethod session-eval-in-frame ((agent-session agent-session) id frame-index text)
+  (send-to-agent agent-session (list :eval-in-frame id frame-index text)))
+
+(defmethod session-return-from-frame ((agent-session agent-session) id frame-index text)
+  (send-to-agent agent-session (list :return-from-frame id frame-index text)))
+
+(defmethod session-rerun-frame ((agent-session agent-session) id frame-index)
+  (send-to-agent agent-session (list :rerun-frame id frame-index)))
+
+(defmethod session-input ((agent-session agent-session) text)
+  (send-to-agent agent-session (list :input text)))
+
 (defmethod session-close ((agent-session agent-session))
   (sb-thread:with-mutex ((agent-session-send-lock agent-session))
     (setf (agent-session-closed-p agent-session) t))
