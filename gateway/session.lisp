@@ -10,11 +10,15 @@
 ;;;   (:values ("printed value" ...))
 ;;;   (:level-opened :id ID :depth N :type "TYPE" :report "text"
 ;;;           :restarts ((INDEX "NAME" "report") ...) :backtrace ("frame" ...)
-;;;           :unwindable (FRAME-INDEX ...))
+;;;           :unwindable (FRAME-INDEX ...) :unreadable (FRAME-INDEX ...)
+;;;           :frames :read-or-:lost)
 ;;;   (:level-closed ID)
 ;;;   (:locals ID FRAME-INDEX (("NAME" "value") ...))
 ;;;   (:needs-input)
 ;;;   (:input-done)
+;;;   (:interrupt-waiting)   ; Interrupt can't land yet, code's in foreign (C) code
+;;;   (:interrupt-missed)    ; ...and evaluation finished before it could
+;;;   (:agent-gone)          ; agent died without the session closing it, always last
 ;;;
 ;;; Receiver can get called on any thread, including the caller's own thread from
 ;;; inside SESSION-EVAL. So don't hold a lock the receiver takes while calling
@@ -32,7 +36,7 @@
 
 (defgeneric session-eval (session text)
   (:documentation "Send TEXT off to be read and evaluated. Gateway never reads TEXT itself.
-Return value doesn't matter"))
+:TOO-LONG means TEXT was over the wire's limit and went nowhere; any other return doesn't matter"))
 
 (defgeneric session-invoke-restart (session id index)
   (:documentation "Answer debugger level ID by invoking its restart number INDEX.
@@ -61,4 +65,5 @@ Return value doesn't matter"))
 Return value doesn't matter"))
 
 (defgeneric session-input (session text)
-  (:documentation "Give TEXT to visitor code as one line of input. Return value doesn't matter"))
+  (:documentation "Give TEXT to visitor code as one line of input. :TOO-LONG means TEXT was
+over the wire's limit and went nowhere; any other return doesn't matter"))

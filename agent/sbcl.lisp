@@ -16,6 +16,27 @@
   (list 'sb-unix:nanosleep 'sb-unix::nanosleep-float 'sb-unix::nanosleep-double)
   "Every function CL:SLEEP does its waiting in, depending on what kind of number it gets")
 
+(defparameter *tested-sbcl-version* "2.6.10"
+  "The SBCL the Interrupt and frame code was tested on. They lean on its internals, so the
+agent won't start on any other. Bump it once the Interrupt tests pass on a new one")
+
+(defparameter *sbcl-internals*
+  (list (list :function 'sb-unix:nanosleep)
+        (list :function 'sb-unix::nanosleep-float)
+        (list :function 'sb-unix::nanosleep-double)
+        (list :function 'sb-di::compiled-frame-escaped)
+        (list :function 'sb-debug::frame-call-as-list)
+        (list :variable 'sb-debug::*default-argument-limit*)
+        (list :variable 'sb-kernel:*free-interrupt-context-index*))
+  "SBCL internals the agent uses, as (kind symbol). Reading a :: symbol just interns it if
+it's gone, so nothing fails until it's called. CHECK-SBCL-INTERNALS catches that up front")
+
+(define-condition unsupported-sbcl (error)
+  ((problems :initarg :problems :reader unsupported-sbcl-problems))
+  (:report (lambda (condition stream)
+             (format stream "The agent can't run on this SBCL:~{~%  ~A~}"
+                     (unsupported-sbcl-problems condition)))))
+
 (sb-alien:define-alien-routine ("socket" %socket) sb-alien:int
   (domain sb-alien:int) (type sb-alien:int) (protocol sb-alien:int))
 
@@ -57,12 +78,12 @@
   (sb-thread:make-thread function :name name))
 
 (defun wait-for-thread (thread)
-  "Return once THREAD is done"
-  (sb-thread:join-thread thread :default nil))
+  "Return once THREAD is done: what its function returned, or :ABORTED"
+  (sb-thread:join-thread thread :default :aborted))
 
-(defun kill-thread (thread)
-  "End THREAD, unwinding it on the way out"
-  (sb-thread:terminate-thread thread))
+(defun abort-this-thread ()
+  "End the current thread, unwinding it on the way out"
+  (sb-thread:abort-thread))
 
 (defun interrupt (thread function)
   "Run FUNCTION in THREAD as soon as it's interruptible. FUNCTION starts with interrupts off,
@@ -89,6 +110,25 @@ once that's safe. :SENT, or :THREAD-GONE"
   "How many interrupt contexts SBCL has pushed on this thread right now"
   sb-kernel:*free-interrupt-context-index*)
 
+(defun check-sbcl-internals ()
+  ":OK if this is the tested SBCL and every internal we use is there. Signals
+UNSUPPORTED-SBCL otherwise"
+  (let ((problems (sbcl-problems)))
+    (if (null problems)
+        :ok
+        (error 'unsupported-sbcl :problems problems))))
+
+(defun sbcl-problems ()
+  "What's wrong with this SBCL, as lines of text. Empty when nothing is"
+  (append (unless (string= (lisp-implementation-version) *tested-sbcl-version*)
+            (list (format nil "it's version ~A, and the agent is tested on ~A"
+                          (lisp-implementation-version) *tested-sbcl-version*)))
+          (loop for (kind symbol) in *sbcl-internals*
+                unless (ecase kind
+                         (:function (fboundp symbol))
+                         (:variable (boundp symbol)))
+                  collect (format nil "~(~A~) ~S is missing" kind symbol))))
+
 (defun wrap-sleep (wrapper)
   "Route every wait CL:SLEEP does through WRAPPER, a function of the real sleep function and
 its arguments. Wrapping a second time does nothing"
@@ -102,6 +142,10 @@ its arguments. Wrapping a second time does nothing"
 (defun make-lock (name)
   "A lock called NAME"
   (sb-thread:make-mutex :name name))
+
+(defun holding-lock-p (lock)
+  "True when this thread holds LOCK"
+  (sb-thread:holding-mutex-p lock))
 
 (defun call-with-lock (lock function)
   "Call FUNCTION holding LOCK. Interrupts wait until we let go"
@@ -192,11 +236,14 @@ entry. Uses SBCL's hook because BREAK binds *DEBUGGER-HOOK* to NIL, which is nif
 
 (defun debugger-frames (stop-at count)
   "Up to COUNT frames, newest first, from where the debugger was entered down to (not
-including) the first frame of STOP-AT"
+including) the first frame of STOP-AT. Near where an Interrupt landed, walking down can hit
+a garbage frame and signal; then you get the frames above it. That error mustn't escape:
+SBCL turns our hook off while it runs, so it'd land in SBCL's own debugger and hang"
   (let ((frames '()))
-    (sb-debug:map-backtrace (lambda (frame) (push frame frames))
-                            :count count
-                            :from (or sb-debug:*stack-top-hint* :current-frame))
+    (handler-case (sb-debug:map-backtrace (lambda (frame) (push frame frames))
+                                          :count count
+                                          :from (or sb-debug:*stack-top-hint* :current-frame))
+      (error () :walk-stopped))
     (loop for frame in (nreverse frames)
           until (eq (frame-function-name frame) stop-at)
           collect frame)))
@@ -206,6 +253,15 @@ including) the first frame of STOP-AT"
   (and (typep frame 'sb-di::compiled-frame)
        (sb-di::compiled-frame-escaped frame)
        t))
+
+(defun frame-readable-p (frame)
+  "True when FRAME's args and locals read without an error. Near where an Interrupt landed,
+a frame can point at garbage, and reading it faults or trips a type check. Reading garbage
+doesn't write anything, so catching it here is safe"
+  (handler-case (progn (frame-call frame)
+                       (frame-locals frame)
+                       t)
+    (error () nil)))
 
 (defun frame-call (frame)
   "FRAME as a call form: function name, then its arguments as they are right now"

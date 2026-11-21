@@ -2,7 +2,8 @@
 
 (defpackage #:to-restart-is-divine/wire
   (:use #:cl)
-  (:export #:write-message #:read-message #:malformed-message #:*max-message-length*))
+  (:export #:write-message #:read-message #:message-text #:malformed-message
+           #:*max-message-length*))
 
 (in-package #:to-restart-is-divine/wire)
 
@@ -30,11 +31,16 @@
   "Signal MALFORMED-MESSAGE with a reason from CONTROL and ARGUMENTS"
   (error 'malformed-message :reason (apply #'format nil control arguments)))
 
+(defun message-text (message)
+  "MESSAGE printed the way it goes on the wire, minus the prefix. Anything that hashes or
+logs a message prints it with this, so it can't drift from what was sent"
+  (with-standard-io-syntax
+    (let ((*print-case* :downcase))
+      (prin1-to-string message))))
+
 (defun write-message (message stream)
   "Write MESSAGE to STREAM with its length prefix, then force it out"
-  (let ((text (with-standard-io-syntax
-                (let ((*print-case* :downcase))
-                  (prin1-to-string message)))))
+  (let ((text (message-text message)))
     (when (> (length text) *max-message-length*)
       (malformed "~D characters is over the limit of ~D" (length text) *max-message-length*))
     (format stream "~(~v,'0X~)~A" +prefix-width+ (length text) text)

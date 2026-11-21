@@ -19,18 +19,30 @@ or :NO-FRAME"
           (t (nth index frames)))))
 
 (defun unreadable-frames (condition frames)
-  "FRAMES whose args and locals can't be trusted: the one an Interrupt stopped
-mid-instruction, where values may be halfway between registers and stack. A trap stops
-where the compiler left good debug info, so error levels don't have this problem"
-  (if (typep condition 'interrupted)
-      (remove-if-not #'frame-escaped-p frames)
-      '()))
+  "FRAMES whose args and locals can't be trusted"
+  (remove-if-not (lambda (frame) (frame-unreadable-p condition frame)) frames))
+
+(defun frame-unreadable-p (condition frame)
+  "True when FRAME's args and locals can't be trusted: the frame an Interrupt stopped
+mid-instruction, where values may be halfway between registers and stack, or any frame
+whose args or locals fault when read. A trap stops where the compiler left good debug
+info, so the first case is only for Interrupt levels. The escaped frame is never read at
+all, since its registers can hold garbage that reads fine and then breaks the printer"
+  (or (and (typep condition 'interrupted) (frame-escaped-p frame))
+      (not (frame-readable-p frame))))
+
+(defun unreadable-indexes (frames unreadable)
+  "Indexes of the UNREADABLE ones among FRAMES"
+  (loop for frame in frames
+        for index from 0
+        when (member frame unreadable)
+          collect index))
 
 (defun unwindable-indexes (frames unreadable)
   "Indexes of the FRAMES you can rerun or return from. None of the UNREADABLE ones"
   (loop for frame in frames
         for index from 0
-        when (and (frame-unwindable-p frame) (not (member frame unreadable)))
+        when (and (not (member frame unreadable)) (frame-unwindable-p frame))
           collect index))
 
 (defun printed-locals (frame)

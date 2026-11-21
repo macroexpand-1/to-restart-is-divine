@@ -35,6 +35,10 @@
   (is (equal "000007(:ping)" (with-prefix '(:ping))))
   (is (equal "00000d(:output \"λ\")" (with-prefix '(:output "λ")))))
 
+(test message-text-is-what-goes-after-the-prefix
+  (dolist (message '((:ping) (:output "λ \"quoted\"") (:values ("3" "NIL"))))
+    (is (equal (subseq (with-prefix message) 6) (w:message-text message)))))
+
 (test empty-stream-is-end
   (is (eq :end (without-prefix ""))))
 

@@ -71,15 +71,20 @@ Line is :NONE if we're not recalling"
   (restarts '() :read-only t)
   (backtrace '() :read-only t)
   (unwindable '() :read-only t)
+  (unreadable '() :read-only t) ; frames whose args and locals can't be read
+  (frames :read :read-only t)   ; :LOST when the agent couldn't read the stack at all
   (locals '() :read-only t))
 
 (defun event-debug-level (event)
   "Debugger level that a (:level-opened ...) EVENT describes"
-  (destructuring-bind (&key id depth type report restarts backtrace unwindable &allow-other-keys)
+  (destructuring-bind (&key id depth type report restarts backtrace unwindable unreadable
+                         (frames :read)
+                       &allow-other-keys)
       (rest event)
     (make-debug-level :id id :depth depth :type type :report report
                       :restarts restarts :backtrace backtrace
-                      :unwindable unwindable)))
+                      :unwindable unwindable :unreadable unreadable
+                      :frames (ecase frames ((:read :lost) frames)))))
 
 (defun push-level (levels debug-level)
   "LEVELS with DEBUG-LEVEL opened on top"
@@ -113,12 +118,18 @@ Unknown ID changes nothing"
                     :restarts (debug-level-restarts debug-level)
                     :backtrace (debug-level-backtrace debug-level)
                     :unwindable (debug-level-unwindable debug-level)
+                    :unreadable (debug-level-unreadable debug-level)
+                    :frames (debug-level-frames debug-level)
                     :locals (acons frame-index pairs
                                    (remove frame-index (debug-level-locals debug-level) :key #'car))))
 
 (defun frame-unwindable-in-p (debug-level frame-index)
   "True when you can rerun or return from frame FRAME-INDEX of DEBUG-LEVEL"
   (member frame-index (debug-level-unwindable debug-level)))
+
+(defun frame-readable-in-p (debug-level frame-index)
+  "True when frame FRAME-INDEX of DEBUG-LEVEL has locals you can look at"
+  (not (member frame-index (debug-level-unreadable debug-level))))
 
 (defun local-assignment (name text)
   "Text of a form setting variable NAME to TEXT. We don't read either string here"

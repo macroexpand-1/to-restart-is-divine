@@ -19,6 +19,7 @@
             ".condition { white-space: pre-wrap; }"
             ".restart { display: block; margin: 0.25rem 0; text-align: left; font: inherit; }"
             ".frame { color: dimgray; }"
+            ".unreadable { font-style: italic; opacity: 0.6; }"
             ".call { margin-right: 0.5rem; }"
             ".frame-action { font: inherit; margin-left: 0.25rem; }"
             ".frame-value { font: inherit; width: 8rem; margin-left: 0.25rem; }"
@@ -35,7 +36,9 @@
   (panel nil :read-only t)
   (repl-line nil :read-only t)
   (interrupt-button nil :read-only t)
+  (session-kind nil :read-only t)
   (lock (sb-thread:make-mutex :name "page") :read-only t)
+  (start-over-lock (sb-thread:make-mutex :name "page start over") :read-only t)
   ;; mutable
   session
   (history (g:make-history))
@@ -56,14 +59,17 @@
 
 (defun on-new-window (body session-kind)
   "Build one tab's page and run it until the tab closes, then close its session"
-  (let ((page (build-page body)))
+  (let ((page (build-page body session-kind)))
     (setf (page-session page) (g:open-session session-kind page))
     (attach-page-callbacks page)
     (clog:run body)
-    (g:session-close (page-session page))))
+    ;; the lock waits out a Start over still swapping sessions, so we close the new one
+    (sb-thread:with-mutex ((page-start-over-lock page))
+      (g:session-close (page-session page)))))
 
-(defun build-page (body)
-  "Lay out the page in BODY and return its struct. Callbacks get attached separately"
+(defun build-page (body session-kind)
+  "Lay out the page in BODY and return its struct, which opens sessions of SESSION-KIND.
+Callbacks get attached separately"
   (setf (clog:title (clog:html-document body)) "To Restart Is Divine")
   (clog:create-style-block body :content *page-css*)
   (let* ((console (clog:create-div body :class "console"))
@@ -74,7 +80,8 @@
          (side (clog:create-div body :class "side")))
     (setf (clog:text side) "Lesson prose goes here once lessons exist.")
     (%make-page :scrollback scrollback :panel panel
-                :repl-line repl-line :interrupt-button interrupt-button)))
+                :repl-line repl-line :interrupt-button interrupt-button
+                :session-kind session-kind)))
 
 (defun attach-page-callbacks (page)
   "Hook up REPL line and Interrupt callbacks, then focus the REPL line"
@@ -142,7 +149,13 @@ on the last sends repl-newer, each with whatever the line holds. Line grows to f
 (defun submit-line (page line)
   "Echo and record LINE (browser already took it off the REPL line), then send it.
 The send happens outside the lock"
-  (send-submitted-line page line (record-submitted-line page line)))
+  (note-unsent-line page (send-submitted-line page line (record-submitted-line page line))))
+
+(defun note-unsent-line (page outcome)
+  "Tell the page when a line was too long to send. OUTCOME is what the send returned"
+  (when (eq outcome :too-long)
+    (sb-thread:with-mutex ((page-lock page))
+      (append-line page "note" ";; That line is too long to send."))))
 
 (defun record-submitted-line (page line)
   "Echo LINE and add it to history. Returns its route, :INPUT or :EVAL"
@@ -261,7 +274,47 @@ asking for the recall. Browser does that check, so no keystroke gets clobbered"
       (:needs-input
        (note-needs-input page))
       (:input-done
-       (setf (page-needs-input page) :none)))))
+       (setf (page-needs-input page) :none))
+      (:interrupt-waiting
+       (append-line page "note"
+                    ";; Interrupt is waiting: the code is in foreign (C) code. It lands once that returns.")
+       (append-start-over page "If it never returns, Start over. That throws away everything this session defined."))
+      (:interrupt-missed
+       (append-line page "note" ";; Interrupt didn't land: the evaluation finished first."))
+      (:agent-gone
+       (append-line page "note" ";; The Lisp behind this page died.")
+       (append-start-over page "Start over to get a fresh one. Nothing this session defined comes back.")))))
+
+(defun append-start-over (page text)
+  "Tack TEXT and a Start over button onto the scrollback. Caller holds page lock"
+  (let ((scrollback-line (clog:create-div (page-scrollback page) :class "note")))
+    (setf (clog:text (clog:create-span scrollback-line :class "call")) (format nil ";; ~A" text))
+    (clog:set-on-click (clog:create-button scrollback-line :content "Start over" :class "frame-action")
+                       (lambda (button)
+                         (declare (ignore button))
+                         (start-over page)))
+    (scroll-to-end (page-scrollback page))))
+
+(defun start-over (page)
+  "Swap PAGE's session for a fresh one of the same kind and clear the page. Closing the old
+session kills its process, stuck or not. :STARTED-OVER, or :ALREADY-STARTING-OVER if
+another press got here first"
+  (let ((started (sb-thread:with-mutex ((page-start-over-lock page) :wait-p nil)
+                   (g:session-close (page-session page))
+                   (sb-thread:with-mutex ((page-lock page))
+                     (clear-page page))
+                   (setf (page-session page) (g:open-session (page-session-kind page) page))
+                   :started-over)))
+    (or started :already-starting-over)))
+
+(defun clear-page (page)
+  "Empty PAGE's scrollback, panel and console values, keeping its history. Caller holds
+page lock"
+  (clog:destroy-children (page-scrollback page))
+  (clog:destroy-children (page-panel page))
+  (setf (page-levels page) '()
+        (page-needs-input page) :none)
+  (clog:focus (page-repl-line page)))
 
 (defun note-needs-input (page)
   "Mark PAGE as waiting for a line in its newest level, with a note in the scrollback
@@ -319,18 +372,25 @@ Caller holds page lock"
                          (on-restart-click page level-id index)))))
 
 (defun render-frames (page level-box debug-level)
-  "A row in LEVEL-BOX for each frame in DEBUG-LEVEL's backtrace"
-  (loop for frame-text in (g:debug-level-backtrace debug-level)
-        for frame-index from 0
-        do (render-frame page level-box debug-level frame-index frame-text)))
+  "A row in LEVEL-BOX for each frame in DEBUG-LEVEL's backtrace, or a note if the agent
+couldn't read the stack"
+  (ecase (g:debug-level-frames debug-level)
+    (:read (loop for frame-text in (g:debug-level-backtrace debug-level)
+                 for frame-index from 0
+                 do (render-frame page level-box debug-level frame-index frame-text)))
+    (:lost (setf (clog:text (clog:create-div level-box :class "frame unreadable"))
+                 "The backtrace couldn't be read here. The restarts still work."))))
 
 (defun render-frame (page level-box debug-level frame-index frame-text)
   "Draw one frame row: its call, Locals, Return and Rerun if they're allowed, and its
-locals if we've fetched them"
-  (let ((id (g:debug-level-id debug-level))
-        (row (clog:create-div level-box :class "frame")))
+locals if we've fetched them. A frame whose args and locals can't be read gets only its
+text, dimmed"
+  (let* ((id (g:debug-level-id debug-level))
+         (readable (g:frame-readable-in-p debug-level frame-index))
+         (row (clog:create-div level-box :class (if readable "frame" "frame unreadable"))))
     (setf (clog:text (clog:create-span row :class "call")) frame-text)
-    (render-locals-button page row id frame-index)
+    (when readable
+      (render-locals-button page row id frame-index))
     (when (g:frame-unwindable-in-p debug-level frame-index)
       (render-unwind-controls page row id frame-index))
     (render-locals page row id frame-index
