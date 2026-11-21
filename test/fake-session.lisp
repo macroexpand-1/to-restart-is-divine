@@ -21,10 +21,10 @@ is not of type
              ("(/ 1 0)" "DIVISION-BY-ZERO" "arithmetic error DIVISION-BY-ZERO signalled"))
    :restarts '((0 "RETRY" "Evaluate the form again.")
                (1 "ABORT" "Return to top level.")))
-  "What the fake answers, the levels it opens, and the restarts each level offers.")
+  "What the fake answers, which levels it opens, and the restarts each level offers")
 
 (defun fake-abort-index (script)
-  "The index of ABORT in SCRIPT's restart list, or :NONE"
+  "Index of ABORT in SCRIPT's restart list, or :NONE"
   (let ((entry (find "ABORT" (fake-script-restarts script) :key #'second :test #'string=)))
     (if (consp entry) (first entry) :none)))
 
@@ -33,10 +33,10 @@ is not of type
    ;; mutable
    (next-id :initform 1 :accessor fake-session-next-id)
    (open-level-ids :initform '() :accessor fake-session-open-level-ids))
-  (:documentation "A session that answers with *FAKE-SCRIPT* lists"))
+  (:documentation "Session that answers straight out of *FAKE-SCRIPT*"))
 
 (defmethod g:open-session ((kind (eql :fake)) receiver)
-  "A fake session that reports to RECEIVER"
+  "Fake session reporting to RECEIVER"
   (make-instance 'fake-session :receiver receiver))
 
 (defun deliver (fake-session event)
@@ -44,8 +44,7 @@ is not of type
   (g:receive-event (fake-session-receiver fake-session) event))
 
 (defun open-level (fake-session type report text)
-  "Open a debugger level for TYPE and REPORT, raised by TEXT, and
-announce it"
+  "Open a debugger level for TYPE and REPORT (raised by TEXT) and announce it"
   (let ((id (fake-session-next-id fake-session)))
     (setf (fake-session-next-id fake-session) (1+ id))
     (push id (fake-session-open-level-ids fake-session))
@@ -59,7 +58,7 @@ announce it"
                                                  (format nil "1: (EVAL ~A)" text))))))
 
 (defun deliver-unscripted (fake-session text)
-  "Tell FAKE-SESSION's receiver that TEXT has no script, then send no values"
+  "Tell FAKE-SESSION's receiver there's no script for TEXT, then send empty values"
   (deliver fake-session (list :output (format nil ";; The fake session has no script for ~A~%" text)))
   (deliver fake-session (list :values '())))
 
@@ -72,8 +71,8 @@ announce it"
           (t (deliver-unscripted fake-session text)))))
 
 (defun closing-level-ids (open-level-ids id index)
-  "The levels in OPEN-LEVEL-IDS that restart INDEX of level ID closes, newest first.
-ABORT closes them all and an unknown ID closes none"
+  "Levels in OPEN-LEVEL-IDS that restart INDEX of level ID closes, newest first.
+ABORT closes all of them, unknown ID closes none"
   (let ((tail (member id open-level-ids)))
     (cond ((null tail) '())
           ((eql index (fake-abort-index *fake-script*)) open-level-ids)
@@ -89,6 +88,22 @@ ABORT closes them all and an unknown ID closes none"
 (defmethod g:session-interrupt ((fake-session fake-session))
   (open-level fake-session "TO-RESTART-IS-DIVINE/AGENT:INTERRUPTED" "Interrupted from the page."
               "(interrupt)"))
+
+(defmethod g:session-frame-locals ((fake-session fake-session) id frame-index)
+  (deliver fake-session (list :locals id frame-index '(("X" "5") ("NAME" "\"fake\"")))))
+
+(defmethod g:session-eval-in-frame ((fake-session fake-session) id frame-index text)
+  (declare (ignore id frame-index text))
+  (deliver fake-session '(:values ("NIL"))))
+
+(defmethod g:session-return-from-frame ((fake-session fake-session) id frame-index text)
+  (declare (ignore fake-session id frame-index text)))
+
+(defmethod g:session-rerun-frame ((fake-session fake-session) id frame-index)
+  (declare (ignore fake-session id frame-index)))
+
+(defmethod g:session-input ((fake-session fake-session) text)
+  (declare (ignore fake-session text)))
 
 (defmethod g:session-close ((fake-session fake-session))
   (setf (fake-session-open-level-ids fake-session) '()))

@@ -15,7 +15,8 @@
   :components ((:module "agent"
                 :components ((:file "package")
                              (:file "sbcl")
-                             (:file "agent")))))
+                             (:file "agent")
+                             (:file "frames")))))
 
 (defsystem "to-restart-is-divine/gateway"
   :description "The session protocol, console state, and agent sessions. No third-party dependencies"
@@ -54,6 +55,8 @@
                              (:file "agent-tests")
                              (:file "link-tests")
                              (:file "agent-session-tests")
+                             (:file "frames-tests")
+                             (:file "frames-console-tests")
                              (:file "fake-session")
                              (:file "console")
                              (:file "fake-session-tests"))))

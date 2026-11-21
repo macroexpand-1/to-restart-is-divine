@@ -58,23 +58,14 @@ Everything inside it belongs to the visitor, including the agent.
 Visitor code runs in the same image, so it can redefine agent functions or write straight to the socket if it wants to.
 I'm totally fine with that, because nothing outside the wall trusts the agent at all.
 
-```mermaid
-flowchart TB
-  subgraph outside["Gateway side"]
-    typed["Visitor text"]
-    wrap["Wrapped as a string<br/>inside :eval"]
-    parse["Bounded read<br/>read-eval off"]
-    state["UI state"]
-  end
-  subgraph inside["Sandbox side"]
-    agent["Agent reads<br/>and evals it"]
-    reply["Reply message"]
-  end
-  typed --> wrap --> agent
-  agent --> reply --> parse --> state
-  class typed,wrap,parse,state tone-blue
-  class agent,reply tone-amber
-```
+A form makes one round trip across the wall:
+
+1. **Gateway:** the visitor's text arrives.
+2. **Gateway:** it is wrapped as a string inside `:eval`.
+3. **Sandbox:** the agent reads it and evaluates it.
+4. **Sandbox:** the agent sends a reply message.
+5. **Gateway:** a bounded read parses the reply, with `*read-eval*` off.
+6. **Gateway:** the reply becomes UI state.
 
 **Going in, visitor text is just a string.**
 The gateway never calls `read` or `eval` on anything a visitor typed.
@@ -233,8 +224,11 @@ Two additional threads.
 `:interrupt` has to arrive while the eval thread is busy running a `(loop)`, so something other than the eval thread has to be reading the socket.
 
 - **Reader thread.**
-  Reads messages, answers `:ping` itself, and handles `:interrupt` by calling `sb-thread:interrupt-thread` on the eval thread.
+  Reads messages, answers `:ping` itself, and hands `:interrupt` to a short-lived thread that interrupts the eval thread (see Interrupting, below).
   Everything else goes into the inbox.
+  When the socket closes, it ends the eval thread the same way an Interrupt lands, never unwinding it out of C.
+  If the eval thread is still in visitor's foreign code after five seconds, the reader leaves it be; the agent's own process then exits, which ends the thread without unwinding anything.
+  (In production the gateway kills the agent process outright, so this matters mostly for agents run inside a test image.)
 - **Eval thread.**
   Pulls from the inbox, evaluates, sends `:values`.
   It also runs the debugger loop above, which pulls from the same inbox.
@@ -252,6 +246,55 @@ The interrupt lands in the debugger like any other condition, which we really li
 You get a panel with `continue`, and you can let it keep spinning if you want.
 We mean, this is like the charm of Lisp.
 
+The catch is that `sb-thread:interrupt-thread` runs wherever the eval thread happens to be, and that includes C.
+SBCL calls into C a lot while compiling (zstd compresses debug info, and that calls malloc), so roughly one Interrupt in eight on a compile loop lands there.
+Opening a debugger level in the middle of malloc, or unwinding out of it with ABORT, leaves malloc's lock held, and macOS kills the whole image.
+So the interrupt first checks where it landed, with interrupts still off so a second one can't land on top:
+
+- **Holding one of the agent's locks.**
+  The Lisp half of `mailbox-receive` holds the mailbox's mutex (it's only let go during the wait itself).
+  A level opened there would block the reader on its next `mailbox-send` and trip over the lock on the next `read-line`.
+  Do nothing and try again; the retry lands in the wait, where the lock is free.
+- **In Lisp.**
+  SBCL pushed an interrupt context (`sb-kernel:*free-interrupt-context-index*` went up past what it was when the eval loop or the current level started), so it's safe: open the level.
+- **In a safe wait.**
+  No context was pushed, but the eval thread is blocked somewhere we marked as fine to break into: waiting on the inbox for a `read-line`, or in `cl:sleep`.
+  The agent wraps the three nanosleep functions SLEEP bottoms out in, since compiled code calls SLEEP directly and wrapping SLEEP itself would miss it.
+  Open the level here too.
+- **In C, anywhere else.**
+  Do nothing and return.
+  The short-lived thread sees that, waits a few milliseconds, and tries again until the eval thread is back in Lisp.
+
+Only one Interrupt is in flight at a time; pressing it again while one is still trying does nothing.
+
+Nothing ever breaks into C, which is the compromise.
+Visitor code sitting in a foreign call (through `sb-alien`) can't be interrupted until the call returns.
+After a second of backing off, the agent sends `(:interrupt-waiting)` and the page says so.
+If Lisp code keeps running after the C returns, the Interrupt lands there.
+If the evaluation finishes first, the agent sends `(:interrupt-missed)`, and the page says that too.
+C that never returns can only be stopped by ending the agent, so the waiting note carries a Start over button (see "When the Agent Dies" below).
+
+Landings inside SBCL's own Lisp (the compiler, CLOS, hash tables, packages, the GC) open a level partway through SBCL's work.
+SBCL keeps its critical sections closed to interrupts, and SLIME has interrupted this way for years, but that's evidence, not proof; the test suite stresses each of those workloads.
+
+An Interrupt that lands in Lisp still stops a frame mid-instruction, where values can be halfway between registers and the stack.
+Reading that frame's args crashed the image too, so it's never read.
+Once in a few thousand Interrupts, a frame near the landing point points at garbage as well, and reading its args faults.
+So when a level opens, the agent tries reading every frame's args and locals with memory faults caught (a bad read only faults; it doesn't write anything).
+Walking down the stack can hit the same garbage and signal, so the walk stops at the first error and the level shows the frames above it.
+No error can be let out while a level is being set up: SBCL turns the agent's debugger hook off while the hook runs, so it would land in SBCL's own debugger, which waits forever for a foreground thread.
+So all of level setup's frame reading (the walk, the read checks, the backtrace text and both index lists) runs under one guard in `level-frame-view`.
+If anything there signals anyway, the level opens with its restarts and no frames, `:level-opened` says `:frames :lost` instead of `:frames :read`, and the page says the backtrace couldn't be read.
+Frames that fault, plus the mid-instruction one, are unreadable:
+
+- the backtrace prints just the name with "args unreadable";
+- `:level-opened` lists their indexes under `:unreadable`, and the page dims those rows and leaves off Locals;
+- they're left out of the frames you can return from or rerun, and Locals and eval-in-frame on them are refused.
+
+All of this leans on SBCL internals (the context index, `compiled-frame-escaped`, the nanosleep functions).
+So the agent checks at startup that it's on the SBCL it was tested on (2.6.10) and that every internal it uses is still there, and refuses to start otherwise.
+Moving to a new SBCL means running the Interrupt tests on it and then bumping `*tested-sbcl-version*` in `agent/sbcl.lisp`.
+
 ```mermaid
 sequenceDiagram
   participant G as Gateway
@@ -263,6 +306,19 @@ sequenceDiagram
   A->>G: (:level-opened :id 1 ...)
   Note over G: continue or abort
 ```
+
+## When the Agent Dies
+
+The agent process can end on its own: out of memory, a crash, a sandbox limit, or visitor code calling `sb-ext:exit`.
+The session's event thread then hits end of file or a stream error and, as its last act, hands the page `(:agent-gone)`.
+A session the page closed itself never says that, since a closed session delivers nothing.
+That event is the gateway's own; the agent can't send it, being dead.
+
+The page answers with a note and a Start over button.
+Start over closes the old session, which kills its process whether it's dead, stuck in C or fine, then clears the scrollback and the debugger panel and opens a fresh session of the same kind.
+Everything the old session defined is gone, and the note says so; the REPL history stays.
+A second press while one is in progress does nothing.
+The same button sits under the `(:interrupt-waiting)` note, which makes it the hard stop for C that never returns.
 
 ## The Wire
 
@@ -314,9 +370,13 @@ This is where it starts:
 | Up | `(:ready)` | Listening. |
 | Up | `(:output "text")` | A chunk of output. |
 | Up | `(:values ("printed value" ...))` | Printed values of a finished eval. |
-| Up | `(:level-opened :id ID :depth N ...)` | A debugger level opened. |
+| Up | `(:level-opened :id ID :depth N ...)` | A debugger level opened, with `:unwindable` and `:unreadable` frame indexes, and `:frames` saying whether the stack was `:read` or `:lost`. |
 | Up | `(:level-closed ID)` | That level closed. |
+| Up | `(:interrupt-waiting)` | Interrupt can't land yet: the code is in foreign (C) code. |
+| Up | `(:interrupt-missed)` | The evaluation finished before a waiting Interrupt could land. |
 | Up | `(:pong)` | Still here. |
+
+`(:agent-gone)` isn't on this list because it never crosses the wire: the gateway's session makes it up when the socket ends, and drops any copy that arrives from the agent, since visitor code can write anything to the socket.
 
 ## Printing
 
@@ -328,7 +388,9 @@ That moves the problem to printing, and visitors will absolutely type this (maki
   (setf (cdr (last x)) x))   ; prints forever unless we stop it
 ```
 
-So the agent prints values (and backtrace frames) with `*print-circle*` on and `*print-length*` and `*print-level*` set, and cuts any one printed value off at a size limit.
+So the agent prints values (and backtrace frames) with `*print-circle*` on and `*print-length*` and `*print-level*` set, and cuts any one printed string (a value, a report, a frame's call, a local) at 4000 characters, saying how long it was.
+A message still over the wire's limit goes as a short stand-in: values as one note, and a level with its restarts but its frames marked lost; the agent never signals about length inside the debugger hook.
+A REPL line over the limit isn't sent, and the page says so.
 Same idea for `:output`: `(loop (print 'hi))` is a perfectly reasonable thing to type, so the agent batches output into chunks and the gateway caps the scrollback and drops the oldest lines.
 The visitor can always interrupt it.
 The actual limits get picked when we can watch it happen in a browser.
@@ -397,18 +459,14 @@ Docker also has no wall-clock limit of its own, so the gateway covers that with 
 
 ## Lessons
 
-```mermaid
-flowchart TB
-  dir["lessons/NAME/<br/>source and prose"]
-  load["Fresh SBCL<br/>loads agent and lesson"]
-  check["Check: no contribs<br/>no Quicklisp"]
-  save["save-lisp-and-die"]
-  core["lesson-NAME.core<br/>read-only"]
-  run["Every session:<br/>sbcl --core"]
-  dir --> load --> check --> save --> core --> run
-  class dir,load,check,save,core tone-blue
-  class run tone-amber
-```
+A lesson goes from source to sessions in six steps:
+
+1. `lessons/NAME/` holds its source and prose.
+2. A fresh SBCL loads the agent and the lesson.
+3. The build checks that no contrib and no Quicklisp got loaded.
+4. `save-lisp-and-die` writes the image.
+5. `lesson-NAME.core` is the result, and it is read-only.
+6. Every session starts from it with `sbcl --core`.
 
 A lesson is a directory with Lisp source, optional prose, and a build step.
 You start inside the running image rather than reading a program, which is the other thing (besides the debugger) that makes CL feel different, and a lesson shipped as source to read would hide it.

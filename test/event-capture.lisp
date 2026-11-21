@@ -1,4 +1,4 @@
-;;;; test/event-capture.lisp: a session receiver that keeps every event it is given
+;;;; test/event-capture.lisp: a session receiver that hangs onto every event it gets
 
 (in-package #:to-restart-is-divine/tests)
 
@@ -28,14 +28,14 @@
         :timeout)))
 
 (defun wait-for-captured-event (event-capture)
-  "Wait up to 10 seconds for EVENT-CAPTURE to hold an event. The caller holds its lock"
+  "Wait up to 10 seconds for EVENT-CAPTURE to have an event. Caller holds its lock"
   (loop repeat 10
         while (null (event-capture-events event-capture))
         do (wait-one-second event-capture)))
 
 (defun wait-one-second (event-capture)
-  "Wait up to a second for EVENT-CAPTURE to be told of an event. The caller holds
-its lock, and still holds it after: a timed-out CONDITION-WAIT returns without it"
+  "Wait up to a second for EVENT-CAPTURE to hear about an event. Caller holds its lock
+and still holds it after, since a timed-out CONDITION-WAIT comes back without it and we grab it again"
   (let ((lock (event-capture-lock event-capture)))
     (unless (sb-thread:condition-wait (event-capture-arrived event-capture) lock :timeout 1)
       (sb-thread:grab-mutex lock))))
