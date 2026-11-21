@@ -18,7 +18,7 @@
     (w:read-message in)))
 
 (defun raw-prefixed (text)
-  "TEXT for a correct length prefix"
+  "TEXT behind its correct length prefix, written by hand"
   (format nil "~(~6,'0X~)~A" (length text) text))
 
 ;;; The actual tests

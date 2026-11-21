@@ -6,7 +6,7 @@
 (in-suite console-history)
 
 (defun recalled (history direction)
-  "The line a step in DIRECTION shows from HISTORY, with nothing typed"
+  "Line that one step in DIRECTION shows from HISTORY, with nothing typed"
   (nth-value 1 (g:step-recall history direction "")))
 
 (test previous-shows-pushed-line
@@ -50,7 +50,7 @@
 (in-suite console-debugger)
 
 (defun level (id)
-  "A minimal debug-level with ID"
+  "Bare-bones debug-level with ID"
   (g:make-debug-level :id id :depth id))
 
 (test event-debug-level-reads-fields

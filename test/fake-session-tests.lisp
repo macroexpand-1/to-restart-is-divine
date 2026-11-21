@@ -8,7 +8,7 @@
 (in-suite fake-session)
 
 (defun fake-with-captured-events ()
-  "A fake session and the event capture it reports to"
+  "Fake session plus the event capture it reports to"
   (let ((event-capture (make-event-capture)))
     (values (g:open-session :fake event-capture) event-capture)))
 

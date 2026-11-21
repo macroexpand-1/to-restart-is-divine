@@ -1,4 +1,4 @@
-;;;; agent/wire.lisp: framing messages (used by Agent and Gateway)
+;;;; agent/wire.lisp: message framing, shared by agent and gateway
 
 (defpackage #:to-restart-is-divine/wire
   (:use #:cl)
@@ -7,19 +7,19 @@
 (in-package #:to-restart-is-divine/wire)
 
 
-;;; Messages are one S-expression each whose kind, its first element, is a keyword.
-;;; On the wire each one is six lowercase hex digits giving its length
-;;; in characters, then the text
+;;; Each message is one S-expression, and its first element (its kind) is a keyword.
+;;; On the wire it's six lowercase hex digits giving its length in characters,
+;;; then the text:
 ;;;
-;;;   00000e(:values ("3"))
+;;;   00000f(:values ("3"))
 ;;;
-;;; Both ends open the socket as a UTF-8 char stream, so lengths count characters not octets.
+;;; Both ends open the socket as a UTF-8 char stream, so lengths count characters, not octets.
 
 (defconstant +prefix-width+ 6
   "Hex digits in the length prefix")
 
 (defparameter *max-message-length* (expt 2 20)
-  "The absolute longest printed message read or written (in characters)")
+  "Longest printed message we'll read or write, in characters. Hard limit")
 
 (define-condition malformed-message (error)
   ((reason :initarg :reason :reader malformed-message-reason))
@@ -41,13 +41,13 @@
     (force-output stream)))
 
 (defun read-chars (stream count)
-  "Up to COUNT characters from STREAM, with fewer only if STREAM ends first"
+  "Up to COUNT characters from STREAM. Fewer only if STREAM ends first"
   (let* ((buffer (make-string count))
          (end (read-sequence buffer stream)))
     (subseq buffer 0 end)))
 
 (defun prefix-length (prefix)
-  "Message length PREFIX announces"
+  "Message length that PREFIX announces"
   (unless (and (= (length prefix) +prefix-width+)
                (every (lambda (char) (digit-char-p char 16)) prefix))
     (malformed "the length prefix ~S is not ~D hex digits" prefix +prefix-width+))
@@ -57,9 +57,9 @@
     announced-length))
 
 (defun parse-message (text)
-  "The message TEXT prints, which must be one list headed by a single keyword.
-Reads with *READ-EVAL* off in the standard syntax WRITE-MESSAGE prints with,
-so NIL reads back as NIL rather than :NIL"
+  "Message that TEXT prints, which has to be one list headed by a keyword.
+Reads with *READ-EVAL* off, in the same standard syntax WRITE-MESSAGE prints with,
+so NIL comes back as NIL and not :NIL"
   (multiple-value-bind (message end)
       (handler-case (with-standard-io-syntax
                       (let ((*read-eval* nil))
@@ -73,7 +73,7 @@ so NIL reads back as NIL rather than :NIL"
     message))
 
 (defun read-message (stream)
-  "The next message on STREAM, or :END when STREAM ends cleanly before one starts"
+  "Next message on STREAM, or :END"
   (let ((prefix (read-chars stream +prefix-width+)))
     (if (zerop (length prefix))
         :end

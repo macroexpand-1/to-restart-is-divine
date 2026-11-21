@@ -6,7 +6,7 @@
 (in-suite agent)
 
 (defun next (stream)
-  "Next message on STREAM, :END, or :TIMEOUT with a failed check after five seconds"
+  "Next message on STREAM, :END, or :TIMEOUT (plus a failed check) after five seconds"
   (handler-case (sb-sys:with-deadline (:seconds 5)
                   (w:read-message stream))
     (sb-sys:deadline-timeout ()
@@ -14,7 +14,7 @@
       :timeout)))
 
 (defun next-past-output (stream)
-  "The next message on STREAM, but not :output"
+  "Next message on STREAM that isn't :output"
   (loop for message = (next stream)
         while (and (consp message) (eq :output (first message)))
         finally (return message)))
@@ -24,16 +24,16 @@
   (w:write-message message stream))
 
 (defun level-id-of (opened)
-  "Level id of OPENED, a :level-opened message"
+  "Level id of OPENED (a :level-opened message)"
   (getf (rest opened) :id))
 
 (defun restart-index (opened name)
-  "Index of first restart in OPENED called NAME"
+  "Index of the first restart in OPENED called NAME"
   (first (find name (getf (rest opened) :restarts) :key #'second :test #'string=)))
 
 (defun call-with-agent (function)
-  "Call FUNCTION with gateway's end of an in-process agent, once it says :ready.
-After, hang up and wait for the agent's threads to end"
+  "Call FUNCTION with gateway's end of an in-process agent once it says :ready.
+Afterward, hang up and wait for agent's threads to finish"
   (let* ((directory (ln:create-socket-directory))
          (path (ln:socket-path directory))
          (listener (ln:make-agent-listener path))

@@ -1,9 +1,9 @@
-;;;; gateway/agent-session.lisp: A session backed by a real agent
+;;;; gateway/agent-session.lisp: a session backed by a real agent
 
 (in-package #:to-restart-is-divine/gateway)
 
-;;; Agent messages are already in the event shapes session.lisp lists, so
-;;; they pass to the receiver unchanged. :pong is not an event
+;;; Agent messages already come in the event shapes session.lisp lists, so they
+;;; go to the receiver as-is. :pong isn't an event, so it's dropped
 
 (defclass agent-session (session)
   ((link :initarg :link :reader agent-session-link)
@@ -12,17 +12,17 @@
    ;; mutable
    (closed :initform nil :accessor agent-session-closed-p)
    (event-thread :accessor agent-session-event-thread))
-  (:documentation "A session on one agent, reached over its link"))
+  (:documentation "Session on one agent, reached over its link"))
 
 (defmethod open-session ((kind (eql :agent)) receiver)
-  "A session on a fresh agent in its own SBCL process. It reports to RECEIVER"
+  "Session on a fresh agent in its own SBCL process, reporting to RECEIVER"
   (let ((agent-session (make-instance 'agent-session :link (ln:open-agent-process) :receiver receiver)))
     (setf (agent-session-event-thread agent-session)
           (sb-thread:make-thread (lambda () (event-loop agent-session)) :name "agent session events"))
     agent-session))
 
 (defun event-loop (agent-session)
-  "Hand each agent message to the receiver until the agent hangs up"
+  "Hand each agent message to receiver until the agent hangs up"
   (handler-case
       (loop for message = (w:read-message (ln:link-stream (agent-session-link agent-session)))
             until (eq message :end)
@@ -33,14 +33,14 @@
         (format *error-output* "~&;; Agent session event thread stopped: ~A~%" condition)))))
 
 (defun deliver (agent-session event)
-  "Hand EVENT to the receiver (unless AGENT-SESSION is closed). A receiver error is logged and not fatal"
+  "Hand EVENT to receiver unless AGENT-SESSION is closed. If receiver errors, we log it and move on"
   (unless (agent-session-closed-p agent-session)
     (handler-case (receive-event (agent-session-receiver agent-session) event)
       (error (condition)
         (format *error-output* "~&;; Event receiver failed on ~S: ~A~%" (first event) condition)))))
 
 (defun send-to-agent (agent-session message)
-  "Write MESSAGE to AGENT-SESSION's agent: :SENT, or :DROPPED once AGENT-SESSION is closed"
+  "Write MESSAGE to AGENT-SESSION's agent. :SENT, or :DROPPED once the session's closed"
   (sb-thread:with-mutex ((agent-session-send-lock agent-session))
     (if (agent-session-closed-p agent-session)
         :dropped

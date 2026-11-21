@@ -1,4 +1,4 @@
-;;;; test/agent-session-tests.lisp: A real agent to test against
+;;;; test/agent-session-tests.lisp: a real agent to test against
 
 (in-package #:to-restart-is-divine/tests)
 
@@ -6,7 +6,7 @@
 (in-suite agent-session)
 
 (defun abort-index (debug-level)
-  "The index of ABORT among DEBUG-LEVEL's restarts"
+  "Index of ABORT among DEBUG-LEVEL's restarts"
   (first (find "ABORT" (g:debug-level-restarts debug-level) :key #'second :test #'string=)))
 
 (test agent-session-recovers-from-an-error

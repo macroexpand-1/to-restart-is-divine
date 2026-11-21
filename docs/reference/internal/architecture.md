@@ -58,23 +58,14 @@ Everything inside it belongs to the visitor, including the agent.
 Visitor code runs in the same image, so it can redefine agent functions or write straight to the socket if it wants to.
 I'm totally fine with that, because nothing outside the wall trusts the agent at all.
 
-```mermaid
-flowchart TB
-  subgraph outside["Gateway side"]
-    typed["Visitor text"]
-    wrap["Wrapped as a string<br/>inside :eval"]
-    parse["Bounded read<br/>read-eval off"]
-    state["UI state"]
-  end
-  subgraph inside["Sandbox side"]
-    agent["Agent reads<br/>and evals it"]
-    reply["Reply message"]
-  end
-  typed --> wrap --> agent
-  agent --> reply --> parse --> state
-  class typed,wrap,parse,state tone-blue
-  class agent,reply tone-amber
-```
+A form makes one round trip across the wall:
+
+1. **Gateway:** the visitor's text arrives.
+2. **Gateway:** it is wrapped as a string inside `:eval`.
+3. **Sandbox:** the agent reads it and evaluates it.
+4. **Sandbox:** the agent sends a reply message.
+5. **Gateway:** a bounded read parses the reply, with `*read-eval*` off.
+6. **Gateway:** the reply becomes UI state.
 
 **Going in, visitor text is just a string.**
 The gateway never calls `read` or `eval` on anything a visitor typed.
@@ -233,7 +224,7 @@ Two additional threads.
 `:interrupt` has to arrive while the eval thread is busy running a `(loop)`, so something other than the eval thread has to be reading the socket.
 
 - **Reader thread.**
-  Reads messages, answers `:ping` itself, and handles `:interrupt` by calling `sb-thread:interrupt-thread` on the eval thread.
+  Reads messages, answers `:ping` itself, and hands `:interrupt` to a short-lived thread that interrupts the eval thread (see Interrupting, below).
   Everything else goes into the inbox.
 - **Eval thread.**
   Pulls from the inbox, evaluates, sends `:values`.
@@ -251,6 +242,27 @@ Backtraces, frame inspection and thread interrupts aren't ANSI, so all of that l
 The interrupt lands in the debugger like any other condition, which we really like, because it means `(loop)` doesn't just die.
 You get a panel with `continue`, and you can let it keep spinning if you want.
 We mean, this is like the charm of Lisp.
+
+The catch is that `sb-thread:interrupt-thread` runs wherever the eval thread happens to be, and that includes C.
+SBCL calls into C a lot while compiling (zstd compresses debug info, and that calls malloc), so roughly one Interrupt in eight on a compile loop lands there.
+Opening a debugger level in the middle of malloc, or unwinding out of it with ABORT, leaves malloc's lock held, and macOS kills the whole image.
+So the interrupt first checks where it landed, with interrupts still off so a second one can't land on top:
+
+- **In Lisp.**
+  SBCL pushed an interrupt context (`sb-kernel:*free-interrupt-context-index*` went up past what it was when the eval loop or the current level started), so it's safe: open the level.
+- **In a safe wait.**
+  No context was pushed, but the eval thread is blocked somewhere we marked as fine to break into: waiting on the inbox for a `read-line`, or in `cl:sleep`.
+  The agent wraps the three nanosleep functions SLEEP bottoms out in, since compiled code calls SLEEP directly and wrapping SLEEP itself would miss it.
+  Open the level here too.
+- **In C, anywhere else.**
+  Do nothing and return.
+  The short-lived thread sees that, waits a few milliseconds, and tries again until the eval thread is back in Lisp.
+
+An Interrupt that lands in Lisp still stops a frame mid-instruction, where values can be halfway between registers and the stack.
+Reading that frame's args crashed the image too, so the backtrace prints just its name with "args unreadable", and it's left out of the frames you can return from or rerun.
+Locals and eval-in-frame on it are refused.
+
+All of this leans on SBCL internals (the context index, `compiled-frame-escaped`, the nanosleep functions), so it's pinned to the SBCL version the image ships.
 
 ```mermaid
 sequenceDiagram
@@ -397,18 +409,14 @@ Docker also has no wall-clock limit of its own, so the gateway covers that with 
 
 ## Lessons
 
-```mermaid
-flowchart TB
-  dir["lessons/NAME/<br/>source and prose"]
-  load["Fresh SBCL<br/>loads agent and lesson"]
-  check["Check: no contribs<br/>no Quicklisp"]
-  save["save-lisp-and-die"]
-  core["lesson-NAME.core<br/>read-only"]
-  run["Every session:<br/>sbcl --core"]
-  dir --> load --> check --> save --> core --> run
-  class dir,load,check,save,core tone-blue
-  class run tone-amber
-```
+A lesson goes from source to sessions in six steps:
+
+1. `lessons/NAME/` holds its source and prose.
+2. A fresh SBCL loads the agent and the lesson.
+3. The build checks that no contrib and no Quicklisp got loaded.
+4. `save-lisp-and-die` writes the image.
+5. `lesson-NAME.core` is the result, and it is read-only.
+6. Every session starts from it with `sbcl --core`.
 
 A lesson is a directory with Lisp source, optional prose, and a build step.
 You start inside the running image rather than reading a program, which is the other thing (besides the debugger) that makes CL feel different, and a lesson shipped as source to read would hide it.
