@@ -249,40 +249,63 @@ asking for the recall. Browser does that check, so no keystroke gets clobbered"
   (sb-thread:with-mutex ((page-lock page))
     (clog:focus (page-repl-line page))))
 
-(defmethod g:receive-event ((page page) event)
-  "Show one session EVENT"
+(defmethod g:receive-event ((page page) (up-event g:up-event))
+  "Show one session UP-EVENT"
   (sb-thread:with-mutex ((page-lock page))
-    (ecase (first event)
-      (:ready
-       (append-line page "note" ";; Ready."))
-      (:output
-       (append-line page "output" (second event)))
-      (:values
-       (dolist (line (g:values-lines (second event)))
-         (append-line page "value" line)))
-      (:level-opened
-       (setf (page-levels page) (g:push-level (page-levels page) (g:event-debug-level event)))
-       (render-panel page))
-      (:level-closed
-       (setf (page-levels page) (g:drop-level (page-levels page) (second event)))
-       (render-panel page))
-      (:locals
-       (destructuring-bind (id frame-index pairs) (rest event)
-         (setf (page-levels page) (g:fold-locals (page-levels page) id frame-index pairs)))
-       (render-panel page))
-      (:needs-input
-       (note-needs-input page))
-      (:input-done
-       (setf (page-needs-input page) :none))
-      (:interrupt-waiting
-       (append-line page "note"
-                    ";; Interrupt is waiting: the code is in foreign (C) code. It lands once that returns.")
-       (append-start-over page "If it never returns, Start over. That throws away everything this session defined."))
-      (:interrupt-missed
-       (append-line page "note" ";; Interrupt didn't land: the evaluation finished first."))
-      (:agent-gone
-       (append-line page "note" ";; The Lisp behind this page died.")
-       (append-start-over page "Start over to get a fresh one. Nothing this session defined comes back.")))))
+    (show-event page up-event)))
+
+(defgeneric show-event (page up-event)
+  (:documentation "Show UP-EVENT on PAGE. Caller holds the page lock. Value is ignored"))
+
+(defmethod show-event ((page page) (ready-event g:ready-event))
+  (declare (ignore ready-event))
+  (append-line page "note" ";; Ready."))
+
+(defmethod show-event ((page page) (output-event g:output-event))
+  (append-line page "output" (g:output-event-text output-event)))
+
+(defmethod show-event ((page page) (values-event g:values-event))
+  (dolist (line (g:values-lines (g:values-event-printed values-event)))
+    (append-line page "value" line)))
+
+(defmethod show-event ((page page) (level-opened-event g:level-pened-event))
+  (setf (page-levels page)
+        (g:push-level (page-levels page) (g:level-opened-event-debug-level level-closed-event)))
+  (render-panel page))
+
+(defmethod show-event ((page page) (level-closed-event g:level-closed-event))
+  (setf (page-levels page)
+        (g:drop-level (page-levels page) (g:level-closed-event-level-id level-closed-event)))
+  (render-panel page))
+
+(defmethod show-event ((page page) (locals-event g:locals-event))
+  (setf (page-levels page)
+        (g:fold-locals (page-levels page) (g:locals-event-frame-ref locals-event)
+                       (g:locals-event-pairs locals-event)))
+  (render-panel page))
+
+(defmethod show-event ((page page) (needs-input-event g:needs-input-event))
+  (declare (ignore needs-input-event))
+  (note-needs-input page))
+
+(defmethod show-event ((page page) (input-done-event g:input-done-event))
+  (declare (ignore input-done-event))
+  (setf (page-needs-input page) :none))
+
+(defmethod show-event ((page page) (interrupt-waiting-event g:interrupt-waiting-event))
+  (declare (ignore interrupt-waiting-event))
+  (append-line page "note"
+               ";; Interrupt is waiting: the code is in foreign (C) code. It lands once that returns")
+  (append-start-over page "If it never returns, start over. That throws everything this session defined"))
+
+(defmethod show-event ((page page) (interrupt-missed-event g:interrupt-missed-event))
+  (declare (ignore interrupt-missed-event))
+  (append-line page "note" ";; Interrupt didn't lane: the evaluation finished first"))
+
+(defmethod show-event ((page page) (agent-gone-event g:agent-gone-event))
+  (declare (ignore agent-gone-event))
+  (append-line page "note" ";; The Lisp behind this page died")
+  (append-start-over page "Start over to get a fresh one. Nothing this session defined comes back"))
 
 (defun append-start-over (page text)
   "Tack TEXT and a Start over button onto the scrollback. Caller holds page lock"

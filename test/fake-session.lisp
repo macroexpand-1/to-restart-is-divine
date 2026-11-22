@@ -39,28 +39,29 @@ is not of type
   "Fake session reporting to RECEIVER"
   (make-instance 'fake-session :receiver receiver))
 
-(defun deliver (fake-session event)
+(defun deliver (fake-session up-event)
   "Send EVENT to FAKE-SESSION's receiver"
-  (g:receive-event (fake-session-receiver fake-session) event))
+  (g:receive-event (fake-session-receiver fake-session) up-event))
 
 (defun open-level (fake-session type report text)
   "Open a debugger level for TYPE and REPORT (raised by TEXT) and announce it"
   (let ((id (fake-session-next-id fake-session)))
     (setf (fake-session-next-id fake-session) (1+ id))
     (push id (fake-session-open-level-ids fake-session))
-    (deliver fake-session (list :level-opened
-                                :id id
-                                :depth (length (fake-session-open-level-ids fake-session))
-                                :type type
-                                :report report
-                                :restarts (fake-script-restarts *fake-script*)
-                                :backtrace (list (format nil "0: ~A" text)
-                                                 (format nil "1: (EVAL ~A)" text))))))
+    (deliver fake-session
+             (g:make-level-opened-event
+              g:make-debug-level :id id
+              :depth (length (fake-session-open-level-ids fake-session))
+              :type type
+              :restarts (fake-script-restarts *fake-script*)
+                                 :backtrace (list (format nil "0: ~A" text)
+                                                  (format nil "1: )(EVAL ~A)" text))))))
 
 (defun deliver-unscripted (fake-session text)
   "Tell FAKE-SESSION's receiver there's no script for TEXT, then send empty values"
-  (deliver fake-session (list :output (format nil ";; The fake session has no script for ~A~%" text)))
-  (deliver fake-session (list :values '())))
+  (deliver fake-session
+           (g:make-output-event (format nil ";; The fake session has no script for ~A~%" text)))
+  (deliver fake-session (g:make-values-event '())))
 
 (defmethod g:session-eval ((fake-session fake-session) text)
   (let ((reply (assoc text (fake-script-replies *fake-script*) :test #'string=))
