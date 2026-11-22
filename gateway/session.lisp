@@ -3,25 +3,27 @@
 (in-package #:to-restart-is-divine/gateway)
 
 ;;; You open a session with OPEN-SESSION, handing it a kind and a receiver.
-;;; It reports everything by calling RECEIVE-EVENT on that receiver, one event at a time:
+;;; It reports everything by calling RECEIVE-EVENT on that receiver with one up
+;;; event at a time, a struct from event.lisp. Each is shown beside the list
+;;; EVENT-WIRE gives for it, which is what the agent writes and the log holds:
 ;;;
-;;;   (:ready)
-;;;   (:output "text")
-;;;   (:values ("printed value" ...))
-;;;   (:level-opened :id ID :depth N :type "TYPE" :report "text"
-;;;           :restarts ((INDEX "NAME" "report") ...) :backtrace ("frame" ...)
-;;;           :unwindable (FRAME-INDEX ...) :unreadable (FRAME-INDEX ...)
-;;;           :frames :read-or-:lost)
-;;;   (:level-closed ID)
-;;;   (:locals ID FRAME-INDEX (("NAME" "value") ...))
-;;;   (:needs-input)
-;;;   (:input-done)
-;;;   (:interrupt-waiting)   ; Interrupt can't land yet, code's in foreign (C) code
-;;;   (:interrupt-missed)    ; ...and evaluation finished before it could
-;;;   (:agent-gone)          ; agent died without the session closing it, always last
+;;;   READY-EVENT              (:ready)
+;;;   OUTPUT-EVENT             (:output "text")
+;;;   VALUES-EVENT             (:values ("printed value" ...))
+;;;   LEVEL-OPENED-EVENT       (:level-opened :id ID :depth N :type "TYPE" :report "text"
+;;;                              :restarts ((INDEX "NAME" "report") ...) :backtrace ("frame" ...)
+;;;                              :unwindable (FRAME-INDEX ...) :unreadable (FRAME-INDEX ...)
+;;;                              :frames :read-or-:lost)
+;;;   LEVEL-CLOSED-EVENT       (:level-closed ID)
+;;;   LOCALS-EVENT             (:locals ID FRAME-INDEX (("NAME" "value") ...))
+;;;   NEEDS-INPUT-EVENT        (:needs-input)
+;;;   INPUT-DONE-EVENT         (:input-done)
+;;;   INTERRUPT-WAITING-EVENT  (:interrupt-waiting)  ; Interrupt can't land yet, code's in C
+;;;   INTERRUPT-MISSED-EVENT   (:interrupt-missed)   ; ...and evaluation finished before it could
+;;;   AGENT-GONE-EVENT         (:agent-gone)         ; agent died without the session closing it
 ;;;
 ;;; Receiver can get called on any thread, including the caller's own thread from
-;;; inside SESSION-EVAL. So don't hold a lock the receiver takes while calling
+;;; inside SESSION-SEND. So don't hold a lock the receiver takes while calling
 ;;; into a session.
 
 (defclass session ()

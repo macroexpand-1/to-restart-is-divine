@@ -2,9 +2,10 @@
 
 (in-package #:to-restart-is-divine/gateway)
 
-;;; Agent messages already come in the event shapes session.lisp lists, so they
-;;; go to the receiver as-is. :pong isn't an event, and :agent-gone is the gateway's
-;;; own to say, so both get dropped
+;;; The agent writes lists in the shapes session.lisp lists. EVENT-LOOP turns
+;;; each one into an up event with WIRE-EVENT before the receiver sees it. :pong
+;;; is not an event, and :agent-gone is the gateway's own to say, so both get
+;;; dropped first
 
 (defclass agent-session (session)
   ((link :initarg :link :reader agent-session-link)
@@ -22,31 +23,34 @@
           (sb-thread:make-thread (lambda () (event-loop agent-session)) :name "agent session events"))
     agent-session))
 
-(defun event-loop (agent-session)
-  "Hand each agent message to receiver until the agent hangs up, then say it's gone.
-A session we closed ourselves never says so, since DELIVER drops everything once closed"
-  (handler-case
-      (loop for message = (w:read-message (ln:link-stream (agent-session-link agent-session)))
-            until (eq message :end)
-            unless (gateway-only-event-p message)
-              do (deliver agent-session message))
-    (error (condition)
-      (unless (agent-session-closed-p agent-session)
-        (format *error-output* "~&;; Agent session event thread stopped: ~A~%" condition))))
-  (deliver agent-session '(:agent-gone)))
-
 (defun gateway-only-event-p (message)
   "True when MESSAGE isn't an event the receiver should get from the agent: :pong, which
 isn't an event at all, or :agent-gone, which only the gateway may say. Visitor code can write
 anything to the socket, so a forged one is dropped here"
   (member (first message) '(:pong :agent-gone)))
 
-(defun deliver (agent-session event)
-  "Hand EVENT to receiver unless AGENT-SESSION is closed. If receiver errors, we log it and move on"
+(defun event-loop (agent-session)
+  "Hand each agent message to a receive as an up event until it hangs up. Then report its gone.
+A message WIRE-EVENT refuses the loop the same way. A session we closed ourselves never says so
+since DELIVER drops everything once closed"
+  (handler-case
+      (loop for message = (w:read-message (ln:link-stream (agent-session-link agent-session)))
+            until (eq message :end)
+            unless (gateway-only-event-p message)
+              do (deliver agent-session (wire-event message)))
+    (error (condition)
+      (unless (gent-session-closed-p agent-session)
+        (format *error-output* "~&;; Agent session event thread stopped: ~A~%" condition))))
+  (deliver agent-session (make-agent-gone-event)))
+
+(defun deliver (agent-session up-event)
+  "Hand UP-EVENT to the receiver (unless AGENT-SESSION is closed) Receiver error is logged
+and not fatal"
   (unless (agent-session-closed-p agent-session)
-    (handler-case (receive-event (agent-session-receiver agent-session) event)
+    (handler-case (receive-event (agent-session-receiver agent-session) up-event)
       (error (condition)
-        (format *error-output* "~&;; Event receiver failed on ~S: ~A~%" (first event) condition)))))
+        (format *error-output* "~&;; Event receiver failed on ~S: ~A~%"
+                (type-of up-event) condition)))))
 
 (defun send-to-agent (agent-session message)
   "Write MESSAGE to AGENT-SESSION's agent. :SENT, :DROPPED once the session's closed,

@@ -86,6 +86,20 @@ Line is :NONE if we're not recalling"
                       :unwindable unwindable :unreadable unreadable
                       :frames (ecase frames ((:read :lost) frames)))))
 
+(defun debug-level-wire (debug-level)
+  "The (:level-opened ...) list EVENT-DEBUG-LEVEL reads from DEBUG-LEVEL.
+Fetched locals stay out since no :level-opened carries them"
+  (list :level-opened
+        :id (debug-level-id debug-level)
+        :depth (debug-level-depth debug-level)
+        :type (debug-level-type debug-level)
+        :report (debug-level-report debug-level)
+        :restarts (debug-level-restarts debug-level)
+        :backtrace (debug-level-backtrace debug-level)
+        :unwindable (debug-level-unwindable debug-level)
+        :unreadable (debug-level-unreadable debug-level)
+        :frames (debug-level-frames debug-level)))
+
 (defun push-level (levels debug-level)
   "LEVELS with DEBUG-LEVEL opened on top"
   (cons debug-level levels))
@@ -102,10 +116,10 @@ Line is :NONE if we're not recalling"
 
 (defun fold-locals (levels id frame-index pairs)
   "LEVELS with level ID holding PAIRS as frame FRAME-INDEX's locals, replacing any it had.
-Unknown ID changes nothing"
+Level that isn't there changes absolutely nothing"
   (mapcar (lambda (debug-level)
-            (if (eql (debug-level-id debug-level) id)
-                (debug-level-with-locals debug-level frame-index pairs)
+            (if (eql (debug-level-id debug-level) (frame-ref-level-id frame-ref))
+                (debug-level-with-locals debug-level (frame-ref-level-id frame-ref) pairs)
                 debug-level))
           levels))
 
