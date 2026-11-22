@@ -182,10 +182,10 @@ for itself. Otherwise :EVAL. Caller holds page lock"
 (defun send-submitted-line (page line route)
   "Send LINE to the session the way ROUTE says. A blank :eval line is :BLANK and doesn't get sent"
   (ecase route
-    (:input (g:session-input (page-session page) line))
+    (:input (g:session-input (page-session page) (g:make-input-message line)))
     (:eval (if (g:blank-line-p line)
                :blank
-               (g:session-eval (page-session page) line)))))
+               (g:session-eval (page-session page) (g:make-eval-message line))))))
 
 (defun recall (page direction typed)
   "Step history in DIRECTION (:OLDER or :NEWER) starting from TYPED, which is whatever
@@ -212,13 +212,13 @@ asking for the recall. Browser does that check, so no keystroke gets clobbered"
 
 (defun on-restart-click (page id index)
   "Invoke restart INDEX of level ID, then put focus back on the REPL line"
-  (g:session-invoke-restart (page-session page) id index)
+  (g:session-send (page-session page) (g:make-invoice-restart-message id index))
   (sb-thread:with-mutex ((page-lock page))
     (clog:focus (page-repl-line page))))
 
 (defun on-interrupt-click (page)
   "Interrupt the session, then put focus back on the REPL line"
-  (g:session-interrupt (page-session page))
+  (g:session-(page-session page) (g:make-interrupt-message))
   (sb-thread:with-mutex ((page-lock page))
     (clog:focus (page-repl-line page))))
 
@@ -242,7 +242,6 @@ asking for the recall. Browser does that check, so no keystroke gets clobbered"
 
 (defun on-rerun-click (page id frame-index)
   "Call frame FRAME-INDEX again with whatever args it holds now"
-  (g:session-rerun-frame (page-session page) id frame-index)
   (focus-repl-line page))
 
 (defun focus-repl-line (page)

@@ -61,6 +61,9 @@ died under us (the event loop tells the page about that)"
           (w:malformed-message () :too-long)
           (stream-error () :agent-gone)))))
 
+(defmethod session-send ((agent-session agent-session) (down-message down-mesage))
+  (send-to-agent agent-session (message-wire down-message)))
+
 (defmethod session-eval ((agent-session agent-session) text)
   (send-to-agent agent-session (list :eval text)))
 

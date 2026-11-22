@@ -66,32 +66,44 @@ This is visitor code running, so we mark it as evaluating and Interrupt works he
                        collect form))))
     (eval-form-in-frame `(progn ,@forms) frame)))
 
+(defun frame-message-id (message)
+  "Level id frame MESSAGE names"
+  (second message))
+
+(defun frame-message-index (message)
+  "Frame index frame MESSAGE names"
+  (third message))
+
+(defun frame-message-text (message)
+  "Text frame MESSAGE carries or NIL"
+  (fourth message))
+
 (defun operate-on-frame (agent message)
   "Do what frame MESSAGE asks. If its level or frame is gone, it's :STALE-FRAME, and a frame
 we can't read is :UNREADABLE-FRAME"
-  (destructuring-bind (kind id index &optional text) message
-    (let ((frame (level-frame id index)))
-      (cond ((eq frame :no-frame) :stale-frame)
-            ((eq frame :unreadable-frame) :unreadable-frame)
-            (t (operate-on-live-frame agent kind id index frame text))))))
+  (let ((frame (level-frame (frame-message-id message) (frame-message-index message))))
+    (cond ((eq frame :no-frame) :stale-frame)
+          ((eq frame :unreadable-frame) :unreadable-frame)
+          (t (operate-on-live-frame agent message frame)))))
 
 (defun operate-on-live-frame (agent kind id index frame text)
   "Do KIND to FRAME, which is frame INDEX of level ID. Return and Rerun on a frame that
 can't be unwound are :NOT-UNWINDABLE, and when they do work they never come back"
   (ecase kind
-    (:locals (send-locals agent id index frame))
+    (:locals (send-locals agent message frame))
     (:eval-in-frame
-     (send agent (list :values (print-values (eval-text-in-frame text frame))))
+     (send agent (list :values (print-values (eval-text-in-frame (frame-message-text message) frame))))
      (send-locals agent id index frame))
     (:return-from-frame
      (if (frame-unwindable-p frame)
-         (return-from-frame frame (eval-text-in-frame text frame))
+         (return-from-frame frame (eval-text-in-frame text (frame-message-text message) frame))
          :not-unwindable))
     (:rerun-frame
      (if (frame-unwindable-p frame)
          (rerun-frame frame)
          :not-unwindable))))
 
-(defun send-locals (agent id index frame)
+(defun send-locals (agent message frame)
   "Send FRAME's locals up as a :locals message (it's frame INDEX of level ID)"
-  (send agent (list :locals id index (printed-locals frame))))
+  (send agent (list :locals (frame-message-id message) (frame-message-index message)
+                    (printed-locals frame))))

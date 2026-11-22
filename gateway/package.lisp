@@ -5,9 +5,7 @@
   (:export
    ;; session.lisp
    #:session #:open-session #:receive-event
-   #:session-eval #:session-invoke-restart #:session-interrupt #:session-close
-   #:session-frame-locals #:session-eval-in-frame #:session-return-from-frame
-   #:session-rerun-frame #:session-input
+   #:session-send #:session-close
    ;; agent-session.lisp
    #:agent-session
    ;; console.lisp
@@ -18,3 +16,16 @@
    #:debug-level-unwindable #:debug-level-unreadable #:debug-level-frames #:debug-level-locals
    #:event-debug-level #:push-level #:drop-level #:restart-label #:values-lines
    #:fold-locals #:frame-unwindable-in-p #:frame-readable-in-p #:local-assignment))
+;; message.lisp
+#:down-message #:message-wire #:wire-message
+#:frame-ref #:make-frame-ref #:frame-ref-level-id #:frame-ref-frame-index
+#:eval-message #:make-eval-message #:eval-message-text
+#:invoke-restart-message #:make-invoke-restart-message
+#:invoke-restart-message-level-id #:invoke-restart-message-restart-index
+#:interrupt-message #:make-interrupt-message
+#:input-message #:make-input-message #:input-message-text
+#:frame-message #:frame-message-frame-ref
+#:locals-message #:make-locals-message
+#:eval-in-frame-message #:make-eval-in-frame-message #:eval-in-frame-message-text
+#:return-from-frame-message #:make-return-from-frame-message #:return-from-frame-message-text
+#:rerun-frame-message #:make-rerun-frame-message
