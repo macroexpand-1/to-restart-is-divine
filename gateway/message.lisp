@@ -1,6 +1,6 @@
 ;;;; gateway/message.lisp: the messages a session sends down to a lisp
 
-(in-package #'to-restart-is-divine/gateway)
+(in-package #:to-restart-is-divine/gateway)
 
 (defstruct (down-message (:constructor nil) (:copier nil)))
 
@@ -22,11 +22,18 @@
   (level-id 0 :type integer :read-only t)
   (frame-index 0 :type integer :read-only t))
 
+(defstruct (frame-message (:include down-message) (:constructor nil))
+  (frame-ref (error "A frame message needs a FRAME-REF.") :type frame-ref :read-only t))
+
 (defstruct (locals-message (:include frame-message)
                            (:constructor make-locals-message (frame-ref))))
 
 (defstruct (eval-in-frame-message (:include frame-message)
-                                  (:constructor make-return-from-frame-message (frame-ref text)))
+                                  (:constructor make-eval-in-frame-message (frame-ref text)))
+  (text "" :type string :read-only t))
+
+(defstruct (return-from-frame-message (:include frame-message)
+                                      (:constructor make-return-from-frame-message (frame-ref text)))
   (text "" :type string :read-only t))
 
 (defstruct (rerun-frame-message (:include frame-message)
@@ -44,7 +51,7 @@
         (invoke-restart-message-restart-index invoke-restart-message)))
 
 (defmethod message-wire ((interrupt-message interrupt-message))
-  (declare (ignore interrupt-messsage))
+  (declare (ignore interrupt-message))
   (list :interrupt))
 
 (defmethod message-wire ((input-message input-message))
@@ -52,7 +59,7 @@
 
 (defun frame-wire (kind frame-message &rest fields)
   "Wire list for FRAME-MESSAGE: KIND, its level id and frame index, then FIELDS"
-  (let ((frame-ref (frame-message-from-ref frame-message)))
+  (let ((frame-ref (frame-message-frame-ref frame-message)))
     (list* kind (frame-ref-level-id frame-ref) (frame-ref-frame-index frame-ref) fields)))
 
 (defmethod message-wire ((locals-message locals-message))

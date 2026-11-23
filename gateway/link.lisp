@@ -2,6 +2,7 @@
 
 (defpackage #:to-restart-is-divine/link
   (:use #:cl)
+  (:local-nicknames (#:th #:to-restart-is-divine/threads))
   (:export #:create-socket-directory #:socket-path #:make-agent-listener #:accept-agent-stream
            #:link #:link-stream #:link-process #:open-agent-process #:close-link))
 
@@ -29,8 +30,9 @@
 
 (defun accept-agent-stream (listener &key (timeout 30))
   "Stream to the first agent that connects to LISTENER. Gives up after TIMEOUT seconds"
-  (unless (sb-sys:wait-until-fd-usable (sb-bsd-sockets:socket-file-descriptor listener) :input timeout)
-    (error "No agent connected within ~D seconds." timeout))
+  (ecase (th:fd-readable-within (sb-bsd-sockets:socket-file-descriptor listener) timeout)
+    (:readable :readable)
+    (:timed-out (error "No agent connected within ~D seconds." timeout)))
   (sb-bsd-sockets:socket-make-stream (sb-bsd-sockets:socket-accept listener)
                                      :input t :output t
                                      :element-type 'character
@@ -73,7 +75,11 @@ Socket and directory get deleted as soon as the agent shows up (or doesn't)"
     link))
 
 (defun close-link (link)
-  "Kill agent's process, wait for it to die, then close the stream"
-  (uiop:terminate-process (link-process link) :urgent t)
-  (uiop:wait-process (link-process link))
-  (close (link-stream link) :abort t))
+  "Kill agent's process, give it up to 10 seconds to die, then close the stream either way.
+:CLOSED, or :TIMED-OUT if the process outlived the wait"
+  (let ((process (link-process link)))
+    (uiop:terminate-process process :urgent t)
+    (prog1 (ecase (th:wait-until-within 10 (lambda () (not (uiop:process-alive-p process))))
+             (:done :closed)
+             (:timed-out :timed-out))
+      (close (link-stream link) :abort t))))

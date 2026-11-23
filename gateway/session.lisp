@@ -23,8 +23,8 @@
 ;;;   AGENT-GONE-EVENT         (:agent-gone)         ; agent died without the session closing it
 ;;;
 ;;; Receiver can get called on any thread, including the caller's own thread from
-;;; inside SESSION-SEND. So don't hold a lock the receiver takes while calling
-;;; into a session.
+;;; inside SESSION-SEND. So a receiver only hands the event on (to a mailbox, say)
+;;; or computes a value; it never waits on anything.
 
 (defclass session ()
   ()
@@ -33,9 +33,13 @@
 (defgeneric open-session (kind receiver)
   (:documentation "New session of KIND (a keyword like :AGENT, or a kind struct) that reports to RECEIVER"))
 
-(defgeneric receive-event (receiver event)
-  (:documentation "Take one EVENT from a session, on whatever thread the session happens to deliver on"))
+(defgeneric receive-event (receiver up-event)
+  (:documentation "Take UP-EVENT, one of the structs in event.lisp, from a session, on whatever
+thread the session happens to deliver on"))
 
 (defgeneric session-send (session down-message)
   (:documentation "Send DOWN-MESSAGE to SESSION. Gateway never reads the text inside.
 :TOO-LONG means it was over the wire's limit and went nowhere. Any other return doesn't matter"))
+
+(defgeneric session-close (session)
+  (:documentation "End SESSION. No more events once this returns. Return value doesn't matter"))

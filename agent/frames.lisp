@@ -86,17 +86,17 @@ we can't read is :UNREADABLE-FRAME"
           ((eq frame :unreadable-frame) :unreadable-frame)
           (t (operate-on-live-frame agent message frame)))))
 
-(defun operate-on-live-frame (agent kind id index frame text)
-  "Do KIND to FRAME, which is frame INDEX of level ID. Return and Rerun on a frame that
-can't be unwound are :NOT-UNWINDABLE, and when they do work they never come back"
-  (ecase kind
+(defun operate-on-live-frame (agent message frame)
+  "Do what frame MESSAGE asks to FRAME, the live frame it names. Return and Rerun on a frame
+that can't be unwound are :NOT-UNWINDABLE, and when they do work they never come back"
+  (ecase (first message)
     (:locals (send-locals agent message frame))
     (:eval-in-frame
      (send agent (list :values (print-values (eval-text-in-frame (frame-message-text message) frame))))
-     (send-locals agent id index frame))
+     (send-locals agent message frame))
     (:return-from-frame
      (if (frame-unwindable-p frame)
-         (return-from-frame frame (eval-text-in-frame text (frame-message-text message) frame))
+         (return-from-frame frame (eval-text-in-frame (frame-message-text message) frame))
          :not-unwindable))
     (:rerun-frame
      (if (frame-unwindable-p frame)
@@ -104,6 +104,6 @@ can't be unwound are :NOT-UNWINDABLE, and when they do work they never come back
          :not-unwindable))))
 
 (defun send-locals (agent message frame)
-  "Send FRAME's locals up as a :locals message (it's frame INDEX of level ID)"
+  "Send FRAME's locals up as a :locals message, for the level and frame MESSAGE names"
   (send agent (list :locals (frame-message-id message) (frame-message-index message)
                     (printed-locals frame))))

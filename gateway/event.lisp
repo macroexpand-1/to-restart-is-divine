@@ -48,8 +48,11 @@
   (declare (ignore ready-event))
   (list :ready))
 
+(defmethod event-wire ((output-event output-event))
+  (list :output (output-event-text output-event)))
+
 (defmethod event-wire ((values-event values-event))
-  (lit :output (output-event-text output-event)))
+  (list :values (values-event-printed values-event)))
 
 (defmethod event-wire ((level-opened-event level-opened-event))
   (debug-level-wire (level-opened-event-debug-level level-opened-event)))
@@ -95,10 +98,10 @@
       (:needs-input (apply #'make-needs-input-event fields))
       (:input-done (apply #'make-input-done-event fields))
       (:interrupt-waiting (apply #'make-interrupt-waiting-event fields))
-      (:interrupt-missed (apply #make-interrupt-missed-event fields))
+      (:interrupt-missed (apply #'make-interrupt-missed-event fields))
       (:agent-gone (apply #'make-agent-gone-event fields)))))
 
-(defun wire-local-event (fields)
+(defun wire-locals-event (fields)
   "Locals event make from FIELDS. Level id, frame-index, and then the pairs"
   (destructuring-bind (level-id frame-index pairs) fields
     (make-locals-event (make-frame-ref level-id frame-index) pairs)))

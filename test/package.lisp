@@ -7,7 +7,9 @@
   (:local-nicknames (#:w #:to-restart-is-divine/wire)
                     (#:a #:to-restart-is-divine/agent)
                     (#:ln #:to-restart-is-divine/link)
-                    (#:g #:to-restart-is-divine/gateway))
+                    (#:th #:to-restart-is-divine/threads)
+                    (#:g #:to-restart-is-divine/gateway)
+                    (#:frozen #:to-restart-is-divine/frozen))
   (:export #:divine-tests))
 
 (in-package #:to-restart-is-divine/tests)

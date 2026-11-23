@@ -114,12 +114,12 @@ Fetched locals stay out since no :level-opened carries them"
         (rest tail)
         levels)))
 
-(defun fold-locals (levels id frame-index pairs)
-  "LEVELS with level ID holding PAIRS as frame FRAME-INDEX's locals, replacing any it had.
+(defun fold-locals (levels frame-ref pairs)
+  "LEVELS with the level FRAME-REF names holding PAIRS as that frame's locals, replacing any it had.
 Level that isn't there changes absolutely nothing"
   (mapcar (lambda (debug-level)
             (if (eql (debug-level-id debug-level) (frame-ref-level-id frame-ref))
-                (debug-level-with-locals debug-level (frame-ref-level-id frame-ref) pairs)
+                (debug-level-with-locals debug-level (frame-ref-frame-index frame-ref) pairs)
                 debug-level))
           levels))
 

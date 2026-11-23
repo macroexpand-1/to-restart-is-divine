@@ -15,9 +15,10 @@
     (unwind-protect
          (progn
            (is (equal '(:ready) (next-captured-event event-capture)))
-           (g:session-eval session "(car 5)")
+           (g:session-send session (g:make-eval-message "(car 5)"))
            (let ((level (g:event-debug-level (next-captured-event event-capture))))
-             (g:session-invoke-restart session (g:debug-level-id level) (abort-index level))
+             (g:session-send session (g:make-invoke-restart-message (g:debug-level-id level)
+                                                                     (abort-index level)))
              (is (equal (list :level-closed (g:debug-level-id level))
                         (next-captured-event event-capture)))))
       (g:session-close session))))
@@ -28,10 +29,18 @@
     (unwind-protect
          (progn
            (is (equal '(:ready) (next-captured-event event-capture)))
-           (g:session-eval session "(sb-ext:exit :abort t)")
+           (g:session-send session (g:make-eval-message "(sb-ext:exit :abort t)"))
            (is (equal '(:agent-gone) (next-captured-event event-capture)))
-           (finishes (g:session-eval session "(+ 1 2)")))
+           ;; nothing writes to a dead agent, so a send drops rather than queue
+           (is (eq :dropped (g:session-send session (g:make-eval-message "(+ 1 2)"))))
+           (is (eq :closed (g:session-close session))))
       (g:session-close session))))
+
+(test closing-starts-once-from-open-or-gone
+  (is (equal '(:closing :claimed) (multiple-value-list (g::step-start-close :open))))
+  (is (equal '(:closing :claimed) (multiple-value-list (g::step-start-close :gone))))
+  (is (equal '(:closing :abandoned) (multiple-value-list (g::step-start-close :closing))))
+  (is (equal '(:closed :abandoned) (multiple-value-list (g::step-start-close :closed)))))
 
 (test the-agent-cannot-say-it-is-gone
   ;; visitor code can write anything to the socket, so only the gateway makes :agent-gone
@@ -45,9 +54,11 @@
     (unwind-protect
          (progn
            (is (equal '(:ready) (next-captured-event event-capture)))
-           (is (eq :too-long (g:session-eval session (make-string (1+ w:*max-message-length*)
-                                                                   :initial-element #\a))))
-           (g:session-eval session "(+ 1 2)")
+           (is (eq :too-long (g:session-send session
+                                             (g:make-eval-message
+                                              (make-string (1+ w:*max-message-length*)
+                                                           :initial-element #\a)))))
+           (g:session-send session (g:make-eval-message "(+ 1 2)"))
            (is (equal '(:values ("3")) (next-captured-event event-capture))))
       (g:session-close session))))
 
@@ -61,5 +72,5 @@
 (test closed-session-ignores-calls
   (let ((session (g:open-session :agent (make-event-capture))))
     (g:session-close session)
-    (finishes (g:session-eval session "(+ 1 2)"))
-    (finishes (g:session-interrupt session))))
+    (finishes (g:session-send session (g:make-eval-message "(+ 1 2)")))
+    (finishes (g:session-send session (g:make-interrupt-message)))))

@@ -24,9 +24,10 @@
 ;;; *EVAL-STATE* never gets assigned, just rebound with LET on the eval thread,
 ;;; so its lifetime is easy to follow. Everything else gets passed as an argument.
 
-(defstruct (eval-state (:constructor make-eval-state
-                           (&key levels top-level-abort evaluating context-depth in-safe-wait))
-                       (:copier nil))
+(frozen:define-frozen-struct eval-state-with
+    (eval-state (:constructor make-eval-state
+                    (&key levels top-level-abort evaluating context-depth in-safe-wait))
+                (:copier nil))
   (levels '() :read-only t)
   (top-level-abort :none :read-only t)
   (evaluating nil :read-only t)
@@ -121,15 +122,6 @@ part can still open a level"
 (defun sleep-in-safe-wait (sleep-function &rest arguments)
   "Call SLEEP-FUNCTION on ARGUMENTS as a safe wait. WRAP-SLEEP sends CL:SLEEP through here"
   (call-in-safe-wait (lambda () (apply sleep-function arguments))))
-
-(defun eval-state-with (eval-state &key (levels (eval-state-levels eval-state))
-                                     (top-level-abort (eval-state-top-level-abort eval-state))
-                                     (evaluating (eval-state-evaluating eval-state))
-                                     (context-depth (eval-state-context-depth eval-state))
-                                     (in-safe-wait (eval-state-in-safe-wait eval-state)))
-  "A copy of EVAL-STATE with whichever fields you pass swapped in"
-  (make-eval-state :levels levels :top-level-abort top-level-abort :evaluating evaluating
-                   :context-depth context-depth :in-safe-wait in-safe-wait))
 
 (define-condition interrupted (condition)
   ()
@@ -233,6 +225,15 @@ them, and FIELDS, the frame part of its :level-opened message"
   (unreadable '() :read-only t)
   (fields '() :read-only t))
 
+(defstruct (opened-level (:constructor make-opened-level
+                             (&key id depth condition restarts frame-view)))
+  "A debugger level as it opens: what its :level-opened message is made from"
+  (id 0 :type integer :read-only t)
+  (depth 0 :type integer :read-only t)
+  (condition (error "An opened level needs a CONDITION.") :type condition :read-only t)
+  (restarts '() :read-only t)
+  (frame-view (error "An opened level needs a FRAME-VIEW.") :type frame-view :read-only t))
+
 (defun enter-debugger (agent condition)
   "Open CONDITION as new debugger level and work the inbox until a restart or frame
 operation gets us out"
@@ -242,6 +243,8 @@ operation gets us out"
          (frames (frame-view-frames frame-view))
          (levels (cons (list id restarts frames (frame-view-unreadable frame-view))
                        (eval-state-levels *eval-state*)))
+         (opened-level (make-opened-level :id id :depth (length levels) :condition condition
+                                          :restarts restarts :frame-view frame-view))
          ;; the depth here counts whatever interrupt or error trap opened this level,
          ;; since it stays pushed while the level is open
          (*eval-state* (eval-state-with *eval-state* :levels levels :evaluating nil
@@ -249,7 +252,7 @@ operation gets us out"
                                                      :in-safe-wait nil)))
     (setf (agent-next-id agent) (1+ id))
     (finish-output *standard-output*)
-    (send agent (level-opened-message id (length levels) condition restarts frame-view))
+    (send agent (level-opened-message opened-level))
     ;; SBCL binds the hook to NIL while it runs, so each level has to bind it again.
     ;; That's how an error inside an open level opens the next one
     (unwind-protect
@@ -257,15 +260,16 @@ operation gets us out"
                              (lambda () (serve-level agent)))
       (send agent (list :level-closed id)))))
 
-(defun level-opened-message (id depth condition restarts frame-view)
-  ":level-opened message for CONDITION, as level ID at DEPTH, its frames from FRAME-VIEW"
-  (list* :level-opened
-         :id id
-         :depth depth
-         :type (type-name condition)
-         :report (printed #'princ-to-string condition)
-         :restarts (restart-entries restarts)
-         (frame-view-fields frame-view)))
+(defun level-opened-message (opened-level)
+  ":level-opened message for OPENED-LEVEL, its frame fields last"
+  (let ((condition (opened-level-condition opened-level)))
+    (list* :level-opened
+           :id (opened-level-id opened-level)
+           :depth (opened-level-depth opened-level)
+           :type (type-name condition)
+           :report (printed #'princ-to-string condition)
+           :restarts (restart-entries (opened-level-restarts opened-level))
+           (frame-view-fields (opened-level-frame-view opened-level)))))
 
 (defun level-frame-view (condition)
   "Frame view for a level opening over CONDITION. SBCL turns our debugger hook off until

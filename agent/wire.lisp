@@ -2,7 +2,7 @@
 
 (defpackage #:to-restart-is-divine/wire
   (:use #:cl)
-  (:export #:write-message #:read-message #:message-text #:malformed-message
+  (:export #:write-message #:read-message #:message-text #:text-too-long-p #:malformed-message
            #:*max-message-length*))
 
 (in-package #:to-restart-is-divine/wire)
@@ -38,10 +38,14 @@ logs a message prints it with this, so it can't drift from what was sent"
     (let ((*print-case* :downcase))
       (prin1-to-string message))))
 
+(defun text-too-long-p (text)
+  "True when TEXT, a message printed by MESSAGE-TEXT, is over the wire's limit"
+  (> (length text) *max-message-length*))
+
 (defun write-message (message stream)
   "Write MESSAGE to STREAM with its length prefix, then force it out"
   (let ((text (message-text message)))
-    (when (> (length text) *max-message-length*)
+    (when (text-too-long-p text)
       (malformed "~D characters is over the limit of ~D" (length text) *max-message-length*))
     (format stream "~(~v,'0X~)~A" +prefix-width+ (length text) text)
     (force-output stream)))
